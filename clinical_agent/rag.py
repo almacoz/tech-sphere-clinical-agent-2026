@@ -42,7 +42,7 @@ class RagStore:
             document_id=document_id,
             filename=filename,
             chunk_count=len(chunks),
-            status="indexed",
+            status="AVAILABLE",
         )
         self._documents[document_id] = record
         return record

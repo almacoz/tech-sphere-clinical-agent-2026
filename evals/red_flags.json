@@ -1,0 +1,16 @@
+[
+  {
+    "id": "red_001",
+    "input": "Tengo fiebre alta después de la cirugía.",
+    "expected_risk": "RED",
+    "expected_escalation": true,
+    "expected_evidence": true
+  },
+  {
+    "id": "red_002",
+    "input": "La herida sangra mucho y no para.",
+    "expected_risk": "RED",
+    "expected_escalation": true,
+    "expected_evidence": true
+  }
+]

@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tech Sphere Clinical Agent</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Arial, sans-serif;
+        color: #17202a;
+        background: #f6f7f9;
+      }
+
+      body {
+        margin: 0;
+      }
+
+      main {
+        max-width: 980px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+
+      h1 {
+        margin: 0 0 16px;
+        font-size: 24px;
+      }
+
+      section {
+        margin: 16px 0;
+        padding: 16px;
+        border: 1px solid #d9dee7;
+        border-radius: 8px;
+        background: #fff;
+      }
+
+      label {
+        display: block;
+        margin-bottom: 8px;
+        font-weight: 700;
+      }
+
+      textarea,
+      input[type="text"] {
+        box-sizing: border-box;
+        width: 100%;
+        padding: 10px;
+        border: 1px solid #b9c2cf;
+        border-radius: 6px;
+        font: inherit;
+      }
+
+      textarea {
+        min-height: 96px;
+        resize: vertical;
+      }
+
+      button {
+        margin-top: 10px;
+        padding: 9px 12px;
+        border: 1px solid #1f6feb;
+        border-radius: 6px;
+        background: #1f6feb;
+        color: #fff;
+        font: inherit;
+        cursor: pointer;
+      }
+
+      button.secondary {
+        border-color: #b9c2cf;
+        background: #fff;
+        color: #17202a;
+      }
+
+      button.danger {
+        border-color: #c0372b;
+        background: #c0372b;
+      }
+
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+
+      .row {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+      }
+
+      .pill {
+        display: inline-block;
+        padding: 4px 8px;
+        border-radius: 999px;
+        background: #eef2f7;
+        font-size: 13px;
+      }
+
+      pre {
+        overflow: auto;
+        padding: 12px;
+        border-radius: 6px;
+        background: #101828;
+        color: #f9fafb;
+        white-space: pre-wrap;
+      }
+
+      ul {
+        padding-left: 18px;
+      }
+
+      li {
+        margin: 8px 0;
+      }
+
+      @media (max-width: 760px) {
+        main {
+          padding: 14px;
+        }
+
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Tech Sphere Clinical Agent</h1>
+
+      <section>
+        <label for="session">Session ID</label>
+        <input id="session" type="text" value="demo-session" />
+      </section>
+
+      <div class="grid">
+        <section>
+          <label for="message">Mensaje del paciente</label>
+          <textarea id="message">Tengo fiebre alta después de la cirugía.</textarea>
+          <button id="send">Enviar</button>
+        </section>
+
+        <section>
+          <div class="row">
+            <strong>Decisión</strong>
+            <span id="risk" class="pill">sin ejecutar</span>
+            <span id="human" class="pill">sin escalamiento</span>
+          </div>
+          <p id="answer"></p>
+          <pre id="details">{}</pre>
+        </section>
+      </div>
+
+      <section>
+        <div class="row">
+          <input id="file" type="file" accept=".txt,text/plain" />
+          <button id="upload" class="secondary">Subir conocimiento</button>
+          <button id="refresh" class="secondary">Actualizar lista</button>
+        </div>
+        <ul id="docs"></ul>
+      </section>
+    </main>
+
+    <script>
+      const sessionInput = document.querySelector("#session");
+      const messageInput = document.querySelector("#message");
+      const sendButton = document.querySelector("#send");
+      const answer = document.querySelector("#answer");
+      const risk = document.querySelector("#risk");
+      const human = document.querySelector("#human");
+      const details = document.querySelector("#details");
+      const fileInput = document.querySelector("#file");
+      const uploadButton = document.querySelector("#upload");
+      const refreshButton = document.querySelector("#refresh");
+      const docs = document.querySelector("#docs");
+
+      async function respond() {
+        sendButton.disabled = true;
+        answer.textContent = "Procesando...";
+        try {
+          const response = await fetch("/agent/respond", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              session_id: sessionInput.value || "demo-session",
+              message: messageInput.value,
+            }),
+          });
+          const body = await response.json();
+          if (!response.ok) throw new Error(body.detail || "Error en la respuesta");
+          risk.textContent = body.decision.risk_level;
+          human.textContent = body.decision.needs_human ? "escalar a humano" : "sin escalamiento";
+          answer.textContent = body.response;
+          details.textContent = JSON.stringify(
+            {
+              decision: body.decision,
+              evidence: body.evidence,
+              safety_validation: body.safety_validation,
+              metrics: body.metrics,
+            },
+            null,
+            2,
+          );
+        } catch (error) {
+          answer.textContent = error.message;
+        } finally {
+          sendButton.disabled = false;
+        }
+      }
+
+      async function loadDocuments() {
+        const response = await fetch("/knowledge");
+        const body = await response.json();
+        docs.innerHTML = "";
+        for (const doc of body) {
+          const item = document.createElement("li");
+          const deleteButton = document.createElement("button");
+          deleteButton.className = "danger";
+          deleteButton.textContent = "Eliminar";
+          deleteButton.onclick = async () => {
+            await fetch(`/knowledge/${doc.document_id}`, { method: "DELETE" });
+            await loadDocuments();
+          };
+          item.textContent = `${doc.filename} · ${doc.chunk_count} chunks · ${doc.status} `;
+          item.append(deleteButton);
+          docs.append(item);
+        }
+      }
+
+      async function uploadDocument() {
+        if (!fileInput.files.length) return;
+        uploadButton.disabled = true;
+        try {
+          const form = new FormData();
+          form.append("file", fileInput.files[0]);
+          await fetch("/knowledge/upload", { method: "POST", body: form });
+          fileInput.value = "";
+          await loadDocuments();
+        } finally {
+          uploadButton.disabled = false;
+        }
+      }
+
+      sendButton.addEventListener("click", respond);
+      uploadButton.addEventListener("click", uploadDocument);
+      refreshButton.addEventListener("click", loadDocuments);
+      loadDocuments();
+    </script>
+  </body>
+</html>

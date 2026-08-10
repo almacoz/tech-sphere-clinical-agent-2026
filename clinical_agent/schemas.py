@@ -15,6 +15,14 @@ class RiskLevel(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
+class SupportLevel(str, Enum):
+    SUPPORTED = "SUPPORTED"
+    PARTIALLY_SUPPORTED = "PARTIALLY_SUPPORTED"
+    UNSUPPORTED = "UNSUPPORTED"
+    CONTRADICTED = "CONTRADICTED"
+    NO_EVIDENCE = "NO_EVIDENCE"
+
+
 class EvidenceItem(BaseModel):
     document_id: str
     document: str
@@ -25,14 +33,31 @@ class EvidenceItem(BaseModel):
     relevance: float = Field(ge=0.0, le=1.0)
 
 
+class ClinicalExtraction(BaseModel):
+    symptoms: list[str] = Field(default_factory=list)
+    locations: list[str] = Field(default_factory=list)
+    severity: str | None = None
+    duration: str | None = None
+    trajectory: str | None = None
+    associated_symptoms: list[str] = Field(default_factory=list)
+    postoperative_context: dict[str, Any] = Field(default_factory=dict)
+    alarm_signals: list[str] = Field(default_factory=list)
+    missing_information: list[str] = Field(default_factory=list)
+    prompt_injection_detected: bool = False
+
+
 class EvidenceEvaluation(BaseModel):
     patient_state: dict[str, Any] = Field(default_factory=dict)
+    extraction: ClinicalExtraction | None = None
     symptoms: list[str] = Field(default_factory=list)
     missing_information: list[str] = Field(default_factory=list)
     risk_level: RiskLevel
     needs_human: bool
     evidence: list[EvidenceItem] = Field(default_factory=list)
     clinical_claims: list[str] = Field(default_factory=list)
+    support_level: SupportLevel = SupportLevel.NO_EVIDENCE
+    evidence_coverage: float = Field(default=0.0, ge=0.0, le=1.0)
+    unsupported_claims: list[str] = Field(default_factory=list)
     reasoning_summary: str
 
 
@@ -42,11 +67,14 @@ class Decision(BaseModel):
     reason_codes: list[str] = Field(default_factory=list)
     missing_information: list[str] = Field(default_factory=list)
     evidence_ids: list[str] = Field(default_factory=list)
+    decision_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class SafetyValidation(BaseModel):
     passed: bool
     issues: list[str] = Field(default_factory=list)
+    unsupported_claims: list[str] = Field(default_factory=list)
+    contradictions: list[str] = Field(default_factory=list)
     safe_response: str | None = None
     escalated: bool = False
 
@@ -70,7 +98,7 @@ class DocumentRecord(BaseModel):
     document_id: str
     filename: str
     chunk_count: int
-    status: str
+    status: str = "AVAILABLE"
 
 
 class TurnMetrics(BaseModel):
@@ -83,6 +111,7 @@ class TurnMetrics(BaseModel):
     tts_latency_ms: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    token_accounting: str = "estimated"
     rag_queries: int = 0
     retrieved_documents: list[str] = Field(default_factory=list)
     decision: str = ""

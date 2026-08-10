@@ -1,14 +1,25 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from .agent import ClinicalAgent
 from .rag import RagStore
 from .schemas import AgentRequest, AgentResponse, DocumentRecord
 
 app = FastAPI(title="Tech Sphere Clinical Agent", version="0.1.0")
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 rag_store = RagStore()
 agent = ClinicalAgent(rag_store)
+
+
+@app.get("/", include_in_schema=False)
+def index() -> FileResponse:
+    return FileResponse(STATIC_DIR / "index.html")
 
 
 @app.get("/health")
@@ -25,9 +36,19 @@ async def upload_document(file: UploadFile = File(...)) -> DocumentRecord:
     return rag_store.upsert_document(file.filename or "document.txt", text)
 
 
+@app.post("/knowledge/upload", response_model=DocumentRecord)
+async def upload_knowledge(file: UploadFile = File(...)) -> DocumentRecord:
+    return await upload_document(file)
+
+
 @app.get("/documents", response_model=list[DocumentRecord])
 def list_documents() -> list[DocumentRecord]:
     return rag_store.list_documents()
+
+
+@app.get("/knowledge", response_model=list[DocumentRecord])
+def list_knowledge() -> list[DocumentRecord]:
+    return list_documents()
 
 
 @app.delete("/documents/{document_id}")
@@ -36,6 +57,11 @@ def delete_document(document_id: str) -> dict[str, bool]:
     if not deleted:
         raise HTTPException(status_code=404, detail="Document not found")
     return {"deleted": True}
+
+
+@app.delete("/knowledge/{document_id}")
+def delete_knowledge(document_id: str) -> dict[str, bool]:
+    return delete_document(document_id)
 
 
 @app.post("/agent/respond", response_model=AgentResponse)

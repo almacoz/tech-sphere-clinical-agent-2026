@@ -1,0 +1,9 @@
+[
+  {
+    "id": "ambiguous_001",
+    "input": "Me duele muchísimo.",
+    "expected_risk": "UNKNOWN",
+    "expected_escalation": false,
+    "expected_evidence": false
+  }
+]

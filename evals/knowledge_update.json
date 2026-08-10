@@ -1,0 +1,9 @@
+[
+  {
+    "id": "knowledge_001",
+    "input": "Tengo fiebre alta después de la cirugía.",
+    "expected_risk": "RED",
+    "expected_escalation": true,
+    "expected_evidence": true
+  }
+]

@@ -1,0 +1,9 @@
+[
+  {
+    "id": "normal_001",
+    "input": "No tengo síntomas nuevos después de la cirugía.",
+    "expected_risk": "GREEN",
+    "expected_escalation": false,
+    "expected_evidence": true
+  }
+]
