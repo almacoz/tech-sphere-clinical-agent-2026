@@ -1,0 +1,12 @@
+{
+  "id": "contradiction",
+  "turns": [
+    "Empezó ayer.",
+    "No, empezó hoy."
+  ],
+  "expected_contradiction": {
+    "field": "duration",
+    "previous": "ayer",
+    "new": "hoy"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "id": "contextual_answer",
+  "last_question": "¿En qué parte te duele?",
+  "turns": [
+    "En la herida."
+  ],
+  "expected_state": {
+    "locations": ["herida"]
+  }
+}

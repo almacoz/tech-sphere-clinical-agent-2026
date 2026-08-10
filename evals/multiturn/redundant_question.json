@@ -1,0 +1,11 @@
+{
+  "id": "redundant_question",
+  "turns": [
+    "Me duele bastante desde que llegué a casa.",
+    "Desde que llegué a casa."
+  ],
+  "forbidden_questions": [
+    "¿Desde cuándo empezó?",
+    "¿Cuándo comenzó?"
+  ]
+}

@@ -17,6 +17,28 @@ pip install -r requirements.txt
 uvicorn clinical_agent.main:app --reload --port 8000
 ```
 
+## LLM
+
+Modelo: Llama 3.2 3B
+Runtime: Ollama
+Inferencia: local
+Credenciales API: ninguna
+
+La extracción clínica usa Ollama por defecto y valida la salida con Pydantic.
+Si Ollama no responde o devuelve JSON inválido, el agente vuelve a la extracción
+determinista. Para desactivar Ollama durante pruebas locales:
+
+```sh
+CLINICAL_AGENT_USE_LLM=0 uvicorn clinical_agent.main:app --reload --port 8000
+```
+
+## Estado conversacional
+
+La demo mantiene `ClinicalState` por `session_id` en memoria del proceso. Cada
+turno fusiona la extracción nueva con el estado clínico previo para no repetir
+preguntas sobre datos ya conocidos. Para producción, este estado debería moverse
+a almacenamiento persistente.
+
 Pruebas:
 
 ```sh

@@ -1,0 +1,14 @@
+{
+  "id": "session_persistence",
+  "turns": [
+    "Me duele bastante desde que llegué a casa.",
+    "Es en la herida.",
+    "Está empeorando."
+  ],
+  "expected_state": {
+    "symptoms": ["dolor"],
+    "locations": ["herida"],
+    "duration": "desde que llegué a casa",
+    "trajectory": "empeorando"
+  }
+}

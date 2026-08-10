@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -8,13 +9,16 @@ from fastapi.staticfiles import StaticFiles
 
 from .agent import ClinicalAgent
 from .rag import RagStore
-from .schemas import AgentRequest, AgentResponse, DocumentRecord
+from .schemas import AgentRequest, AgentResponse, DocumentRecord, SessionResetRequest
 
 app = FastAPI(title="Tech Sphere Clinical Agent", version="0.1.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 rag_store = RagStore()
-agent = ClinicalAgent(rag_store)
+agent = ClinicalAgent(
+    rag_store,
+    use_llm_extraction=os.getenv("CLINICAL_AGENT_USE_LLM", "1") != "0",
+)
 
 
 @app.get("/", include_in_schema=False)
@@ -67,3 +71,8 @@ def delete_knowledge(document_id: str) -> dict[str, bool]:
 @app.post("/agent/respond", response_model=AgentResponse)
 def respond(request: AgentRequest) -> AgentResponse:
     return agent.answer(session_id=request.session_id, message=request.message)
+
+
+@app.post("/session/reset")
+def reset_session(request: SessionResetRequest) -> dict[str, bool]:
+    return {"deleted": agent.session_store.delete(request.session_id)}

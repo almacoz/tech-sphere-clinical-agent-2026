@@ -1,0 +1,14 @@
+{
+  "id": "session_isolation",
+  "session_a_turns": [
+    "Me duele la herida.",
+    "Está empeorando."
+  ],
+  "session_b_turns": [
+    "Está empeorando."
+  ],
+  "session_b_forbidden_state": {
+    "symptoms": ["dolor"],
+    "locations": ["herida"]
+  }
+}

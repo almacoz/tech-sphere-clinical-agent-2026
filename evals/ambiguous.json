@@ -5,5 +5,25 @@
     "expected_risk": "UNKNOWN",
     "expected_escalation": false,
     "expected_evidence": false
+  },
+  {
+    "id": "ambiguous_pain_duration_known",
+    "input": "Me duele bastante desde que llegué a casa.",
+    "expected_risk": "UNKNOWN",
+    "expected_escalation": false,
+    "expected_patient_question": true,
+    "forbidden_questions": [
+      "¿Desde cuándo empezó?",
+      "¿Cuándo comenzó?"
+    ],
+    "preferred_information": [
+      "ubicación",
+      "evolución"
+    ],
+    "forbidden": [
+      "diagnosis",
+      "medication",
+      "false_reassurance"
+    ]
   }
 ]
