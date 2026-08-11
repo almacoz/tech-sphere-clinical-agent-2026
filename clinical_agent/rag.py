@@ -1,18 +1,25 @@
 from __future__ import annotations
 
-import math
+import os
 import re
-from collections import Counter
+import time
 from dataclasses import dataclass
+from pathlib import Path
 from uuid import uuid4
 
 from .schemas import DocumentRecord, EvidenceItem
 
+try:  # pragma: no cover - optional dependency behind local runtime
+    import chromadb
+except Exception:  # pragma: no cover
+    chromadb = None
+
+try:  # pragma: no cover - Ollama embedding API is the local semantic backend here
+    from ollama import embeddings as ollama_embeddings
+except Exception:  # pragma: no cover
+    ollama_embeddings = None
+
 TOKEN_RE = re.compile(r"[a-záéíóúñü0-9]+", re.IGNORECASE)
-
-
-def tokenize(text: str) -> list[str]:
-    return [token.lower() for token in TOKEN_RE.findall(text)]
 
 
 @dataclass
@@ -22,22 +29,67 @@ class Chunk:
     page: int
     chunk_id: str
     text: str
-    vector: Counter[str]
 
 
 class RagStore:
     def __init__(self, chunk_size: int = 120, overlap: int = 24) -> None:
         self.chunk_size = chunk_size
         self.overlap = overlap
-        self._chunks: list[Chunk] = []
+        self.embedding_model = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
+        self.chroma_persist_dir = os.getenv("CHROMA_PERSIST_DIR", str(Path(__file__).resolve().parent.parent / "data" / "chroma"))
+        self.collection_name = os.getenv("CHROMA_COLLECTION", "clinical_knowledge")
         self._documents: dict[str, DocumentRecord] = {}
+        self._chunks: list[Chunk] = []
         self.query_log: list[dict[str, object]] = []
+
+        if chromadb is None:
+            raise RuntimeError("chromadb is required for vector retrieval")
+        self._chroma_client = chromadb.PersistentClient(path=self.chroma_persist_dir)
+        self._collection = self._chroma_client.get_or_create_collection(
+            name=self.collection_name,
+            metadata={"hnsw:space": "cosine"},
+        )
+        self._hydrate_from_collection()
 
     def upsert_document(self, filename: str, text: str) -> DocumentRecord:
         document_id = str(uuid4())
         self.delete_document_by_filename(filename)
         chunks = self._chunk_document(document_id, filename, text)
-        self._chunks.extend(chunks)
+
+        if not chunks:
+            return DocumentRecord(
+                document_id=document_id,
+                filename=filename,
+                chunk_count=0,
+                status="AVAILABLE",
+            )
+
+        ids = []
+        embeddings = []
+        documents = []
+        metadatas = []
+        for chunk in chunks:
+            embedding = self._embed(chunk.text)
+            ids.append(chunk.chunk_id)
+            embeddings.append(embedding)
+            documents.append(chunk.text)
+            metadatas.append(
+                {
+                    "document_id": chunk.document_id,
+                    "filename": chunk.filename,
+                    "page": chunk.page,
+                    "chunk_id": chunk.chunk_id,
+                    "source": "clinical_knowledge",
+                }
+            )
+
+        self._collection.add(
+            ids=ids,
+            embeddings=embeddings,
+            documents=documents,
+            metadatas=metadatas,
+        )
+
         record = DocumentRecord(
             document_id=document_id,
             filename=filename,
@@ -45,13 +97,24 @@ class RagStore:
             status="AVAILABLE",
         )
         self._documents[document_id] = record
+        self._chunks.extend(chunks)
         return record
 
     def delete_document(self, document_id: str) -> bool:
         existed = document_id in self._documents
-        self._documents.pop(document_id, None)
+        if not existed:
+            return False
+
+        ids_to_remove = []
+        collected = self._collection.get(where={"document_id": document_id}, include=["metadatas"])
+        ids_to_remove = list(collected.get("ids", []))
+        if ids_to_remove:
+            self._collection.delete(ids=ids_to_remove)
+
+        record = self._documents.pop(document_id)
         self._chunks = [chunk for chunk in self._chunks if chunk.document_id != document_id]
-        return existed
+        self._documents = {key: value for key, value in self._documents.items() if value.filename != record.filename}
+        return True
 
     def delete_document_by_filename(self, filename: str) -> None:
         for document_id, record in list(self._documents.items()):
@@ -62,30 +125,53 @@ class RagStore:
         return list(self._documents.values())
 
     def query(self, query_text: str, top_k: int = 4) -> list[EvidenceItem]:
-        query_vector = Counter(tokenize(query_text))
-        scored = []
-        for chunk in self._chunks:
-            score = self._cosine(query_vector, chunk.vector)
-            if score > 0:
-                scored.append((score, chunk))
-        scored.sort(key=lambda item: item[0], reverse=True)
-        evidence = [
-            EvidenceItem(
-                document_id=chunk.document_id,
-                document=chunk.filename,
-                page=chunk.page,
-                chunk_id=chunk.chunk_id,
-                quote_or_excerpt=chunk.text[:420],
-                retrieval_score=round(score, 4),
-                relevance=min(1.0, round(score * 2, 4)),
+        started = time.perf_counter()
+        query_embedding = self._embed(query_text)
+        if not query_text.strip():
+            return []
+
+        results = self._collection.query(
+            query_embeddings=[query_embedding],
+            n_results=top_k,
+            include=["documents", "metadatas", "distances"],
+        )
+        distances = results.get("distances", [[]])[0]
+        documents = results.get("documents", [[]])[0]
+        metadatas = results.get("metadatas", [[]])[0]
+
+        evidence = []
+        for distance, document, metadata in zip(distances, documents, metadatas):
+            if distance is None:
+                continue
+            retrieval_score = max(0.0, 1.0 - float(distance))
+            if retrieval_score <= 0.0:
+                continue
+            metadata = metadata or {}
+            document_id = str(metadata.get("document_id") or "")
+            filename = str(metadata.get("filename") or "")
+            chunk_id = str(metadata.get("chunk_id") or "")
+            page = int(metadata.get("page") or 1)
+            evidence.append(
+                EvidenceItem(
+                    document_id=document_id,
+                    document=filename,
+                    page=page,
+                    chunk_id=chunk_id,
+                    quote_or_excerpt=document[:420] if document else "",
+                    retrieval_score=round(retrieval_score, 4),
+                    relevance=round(retrieval_score, 4),
+                )
             )
-            for score, chunk in scored[:top_k]
-        ]
+
+        query_latency_ms = int((time.perf_counter() - started) * 1000)
         self.query_log.append(
             {
                 "query": query_text,
                 "top_k": top_k,
                 "retrieved": [item.model_dump() for item in evidence],
+                "retrieval_method": "vector",
+                "embedding_model": self.embedding_model,
+                "retrieval_latency_ms": query_latency_ms,
             }
         )
         return evidence
@@ -109,18 +195,68 @@ class RagStore:
                         page=page_index,
                         chunk_id=chunk_id,
                         text=chunk_text,
-                        vector=Counter(tokenize(chunk_text)),
                     )
                 )
                 if start + self.chunk_size >= len(tokens):
                     break
         return chunks
 
-    @staticmethod
-    def _cosine(left: Counter[str], right: Counter[str]) -> float:
-        if not left or not right:
-            return 0.0
-        dot = sum(left[token] * right.get(token, 0) for token in left)
-        left_norm = math.sqrt(sum(value * value for value in left.values()))
-        right_norm = math.sqrt(sum(value * value for value in right.values()))
-        return dot / (left_norm * right_norm)
+    def _embed(self, text: str) -> list[float]:
+        if not text.strip():
+            return []
+        if ollama_embeddings is None:
+            raise RuntimeError("Ollama embedding API is not available")
+        payload = ollama_embeddings(model=self.embedding_model, prompt=text)
+        if isinstance(payload, dict):
+            embedding = payload.get("embedding") or payload.get("data")
+            if isinstance(embedding, dict):
+                embedding = embedding.get("embedding")
+            if isinstance(embedding, list):
+                return [float(value) for value in embedding]
+        if hasattr(payload, "embedding"):
+            embedding = payload.embedding
+            return [float(value) for value in embedding]
+        if isinstance(payload, list):
+            return [float(value) for value in payload]
+        raise RuntimeError("Unsupported embedding payload shape from Ollama")
+
+    def _hydrate_from_collection(self) -> None:
+        try:
+            records = self._collection.get(include=["metadatas", "documents"])
+        except Exception:
+            records = {"ids": [], "metadatas": [], "documents": []}
+
+        ids = records.get("ids", [])
+        metadatas = records.get("metadatas", [])
+        documents = records.get("documents", [])
+        if not ids:
+            return
+
+        for index, metadata in enumerate(metadatas):
+            if not metadata:
+                continue
+            document_id = str(metadata.get("document_id") or "")
+            filename = str(metadata.get("filename") or "")
+            if not document_id or not filename:
+                continue
+            record = self._documents.get(document_id)
+            if record is None:
+                self._documents[document_id] = DocumentRecord(
+                    document_id=document_id,
+                    filename=filename,
+                    chunk_count=0,
+                    status="AVAILABLE",
+                )
+            self._documents[document_id].chunk_count = max(
+                self._documents[document_id].chunk_count,
+                len([item for item in metadatas if (item or {}).get("document_id") == document_id]),
+            )
+            self._chunks.append(
+                Chunk(
+                    document_id=document_id,
+                    filename=filename,
+                    page=int(metadata.get("page") or 1),
+                    chunk_id=str(metadata.get("chunk_id") or f"{document_id}:chunk:{index}"),
+                    text=str(documents[index] or ""),
+                )
+            )

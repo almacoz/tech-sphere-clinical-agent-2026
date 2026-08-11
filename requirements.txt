@@ -5,3 +5,4 @@ python-multipart==0.0.20
 pytest==8.4.1
 httpx==0.28.1
 ollama==0.5.1
+chromadb==1.0.15

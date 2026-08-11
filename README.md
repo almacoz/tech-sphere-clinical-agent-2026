@@ -17,6 +17,44 @@ pip install -r requirements.txt
 uvicorn clinical_agent.main:app --reload --port 8000
 ```
 
+## RAG
+
+El RAG actual usa un vector store local con embeddings locales y ChromaDB persistente.
+
+- LLM = Ollama / Llama 3.2
+- Embeddings = modelo local de embeddings (por defecto `nomic-embed-text` a través de Ollama)
+- Vector DB = ChromaDB persistente
+- Chunking = `chunk_size = 120`, `overlap = 24`
+- Retrieval = top-k semantic similarity con trazabilidad de `document_id`, `filename`, `page` y `chunk_id`
+- Evidence = `EvidenceItem` con `retrieval_score` y `relevance`
+
+La colección vectorial se persiste bajo `CHROMA_PERSIST_DIR` (por defecto `./data/chroma`), con un modelo de embedding configurado por `EMBEDDING_MODEL`.
+
+```sh
+cp .env.example .env
+# ajustar CHROMA_PERSIST_DIR y EMBEDDING_MODEL si hace falta
+```
+
+Las rutas físicas se guardan en el vector store como metadata y el agente solo consume la forma pública `RagStore`.
+
+## Modelos locales
+
+LLM:
+- `llama3.2`
+
+Embeddings:
+- `nomic-embed-text`
+
+Vector DB:
+- ChromaDB persistente
+
+La aplicación detecta automáticamente si `Ollama` está disponible y si los modelos
+locales exigidos para el agente están instalados. Si falta alguno, la interfaz puede
+solicitar su preparación con el Runtime Manager sin tocar el pipeline clínico.
+
+Ollama debe estar instalado previamente en el sistema. La instalación de Ollama es
+responsabilidad del setup del proyecto.
+
 ## LLM
 
 Modelo: Llama 3.2 3B

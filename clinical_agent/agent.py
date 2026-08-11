@@ -3,6 +3,7 @@ import json
 import re
 import time
 from typing import Any
+from uuid import uuid4
 
 from .llm import generate_json_raw
 from .prompts import clinical_extraction_prompt
@@ -62,8 +63,9 @@ class ClinicalAgent:
         self.session_store = session_store or SessionStore()
 
     def answer(self, session_id: str, message: str) -> AgentResponse:
+        normalized_session_id = (session_id or "").strip() or str(uuid4())
         started = time.perf_counter()
-        session = self.session_store.get_or_create(session_id)
+        session = self.session_store.get_or_create(normalized_session_id)
         extraction = self.extract_clinical(message, session)
         previous_state = session.clinical_state
         clinical_state = merge_clinical_state(previous_state, extraction)
@@ -96,10 +98,10 @@ class ClinicalAgent:
             evidence=evidence,
             decision=decision,
         )
-        self.session_store.update(session_id, session)
+        self.session_store.update(normalized_session_id, session)
 
         summary = {
-            "session_id": session_id,
+            "session_id": normalized_session_id,
             "turn_count": session.turn_count,
             "clinical_extraction": extraction.model_dump(),
             "previous_clinical_state": previous_state.model_dump(),
@@ -121,7 +123,7 @@ class ClinicalAgent:
             "response_sent": final_response,
         }
         metrics = TurnMetrics(
-            session_id=session_id,
+            session_id=normalized_session_id,
             latency_ms=elapsed_ms(started),
             total_latency_ms=elapsed_ms(started),
             rag_latency_ms=rag_latency_ms,
@@ -143,7 +145,7 @@ class ClinicalAgent:
         ).model_dump()
 
         return AgentResponse(
-            session_id=session_id,
+            session_id=normalized_session_id,
             response=final_response,
             decision=decision,
             evidence=evidence,

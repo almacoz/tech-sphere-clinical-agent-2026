@@ -137,8 +137,22 @@
       <h1>Tech Sphere Clinical Agent</h1>
 
       <section>
+        <div id="runtimeManager">
+          <h2>IA LOCAL</h2>
+          <div id="runtimeStatusText">Comprobando entorno...</div>
+          <div id="runtimeMissingText"></div>
+          <div id="runtimeActionRow" class="row">
+            <button id="prepareRuntime" class="secondary" hidden>Preparar IA local</button>
+          </div>
+        </div>
+      </section>
+
+      <section>
         <label for="session">Session ID</label>
-        <input id="session" type="text" value="demo-session" />
+        <input id="session" type="text" />
+        <div class="row">
+          <button id="newConversation" class="secondary">Nueva conversación</button>
+        </div>
       </section>
 
       <div class="grid">
@@ -180,7 +194,181 @@
       const fileInput = document.querySelector("#file");
       const uploadButton = document.querySelector("#upload");
       const refreshButton = document.querySelector("#refresh");
+      const newConversationButton = document.querySelector("#newConversation");
       const docs = document.querySelector("#docs");
+      const runtimeManager = document.querySelector("#runtimeManager");
+      const runtimeStatusText = document.querySelector("#runtimeStatusText");
+      const runtimeMissingText = document.querySelector("#runtimeMissingText");
+      const prepareRuntimeButton = document.querySelector("#prepareRuntime");
+
+      function createSessionId() {
+        if (window.crypto && typeof window.crypto.randomUUID === "function") {
+          return window.crypto.randomUUID();
+        }
+        return `session-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      }
+
+      function startNewConversation() {
+        const nextSessionId = createSessionId();
+        sessionInput.value = nextSessionId;
+        answer.textContent = "";
+        risk.textContent = "sin ejecutar";
+        human.textContent = "sin escalamiento";
+        details.textContent = "{}";
+      }
+
+      async function readApiJson(response) {
+        const raw = await response.text();
+        if (!raw) {
+          return null;
+        }
+        const trimmed = raw.trim();
+        if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+          throw new Error(trimmed || "Error en la respuesta");
+        }
+        try {
+          return JSON.parse(trimmed);
+        } catch (error) {
+          throw new Error(trimmed || error.message || "Respuesta inválida");
+        }
+      }
+
+      function runtimeSummary(status) {
+        if (!status || !status.ollama || !status.ollama.available) {
+          return {
+            ready: false,
+            lines: ["Ollama no está instalado.", "Instala Ollama y vuelve a abrir la aplicación."],
+            missing: [],
+          };
+        }
+        const missing = [];
+        if (!status.models || !status.models["llama3.2"] || !status.models["llama3.2"].installed) {
+          missing.push("llama3.2");
+        }
+        if (!status.models || !status.models["nomic-embed-text"] || !status.models["nomic-embed-text"].installed) {
+          missing.push("nomic-embed-text");
+        }
+        const lines = ["✓ Ollama", "✓ Llama 3.2"];
+        if (missing.includes("llama3.2")) {
+          lines.push("↓ llama3.2");
+        } else {
+          lines.push("✓ llama3.2");
+        }
+        if (missing.includes("nomic-embed-text")) {
+          lines.push("↓ nomic-embed-text");
+        } else {
+          lines.push("✓ nomic-embed-text");
+        }
+        return {
+          ready: Boolean(status.ready),
+          lines,
+          missing,
+        };
+      }
+
+      function renderRuntimeStatus(status) {
+        const summary = runtimeSummary(status);
+        const runtimeLines = [];
+        runtimeLines.push("IA LOCAL");
+        runtimeLines.push("...");
+        if (summary.ready) {
+          runtimeLines[1] = "✓ Ollama";
+          runtimeLines[2] = "✓ llama3.2";
+          runtimeLines[3] = "✓ nomic-embed-text";
+          runtimeLines[4] = "✓ Entorno preparado";
+          runtimeStatusText.textContent = runtimeLines.join("\n");
+          runtimeMissingText.textContent = "✓ IA local lista";
+          prepareRuntimeButton.hidden = true;
+        } else if (!status || !status.ollama || !status.ollama.available) {
+          runtimeStatusText.textContent = "Ollama no está instalado.\nInstala Ollama y vuelve a abrir la aplicación.";
+          runtimeMissingText.textContent = "Ollama no está disponible";
+          prepareRuntimeButton.hidden = true;
+        } else {
+          const ownLines = summary.lines;
+          runtimeLines.splice(0, 1, "IA LOCAL");
+          runtimeStatusText.textContent = ownLines.join("\n");
+          runtimeMissingText.textContent = "Falta un modelo requerido";
+          prepareRuntimeButton.hidden = false;
+          prepareRuntimeButton.disabled = false;
+        }
+      }
+
+      async function loadRuntimeStatus() {
+        try {
+          const response = await fetch("/runtime/status");
+          const status = await readApiJson(response);
+          if (!response.ok) {
+            throw new Error((status && (status.detail || status.message)) || "No se pudo consultar el runtime");
+          }
+          renderRuntimeStatus(status);
+          if (status.ready) {
+            prepareRuntimeButton.hidden = true;
+          }
+          return status;
+        } catch (error) {
+          runtimeStatusText.textContent = error.message;
+          runtimeMissingText.textContent = "No se pudo consultar el entorno";
+          prepareRuntimeButton.hidden = true;
+          return null;
+        }
+      }
+
+      async function prepareRuntime() {
+        const status = await loadRuntimeStatus();
+        if (!status || !status.ollama || !status.ollama.available) {
+          return;
+        }
+        const missing = [];
+        if (!status.models || !status.models["llama3.2"] || !status.models["llama3.2"].installed) {
+          missing.push("llama3.2");
+        }
+        if (!status.models || !status.models["nomic-embed-text"] || !status.models["nomic-embed-text"].installed) {
+          missing.push("nomic-embed-text");
+        }
+        if (!missing.length) {
+          runtimeStatusText.textContent = "IA LOCAL\n✓ Ollama\n✓ llama3.2\n✓ nomic-embed-text\n✓ Entorno preparado";
+          return;
+        }
+        runtimeStatusText.textContent = "IA LOCAL\n✓ Ollama\n" + (missing.includes("llama3.2") ? "⟳ llama3.2" : "✓ llama3.2") + "\n" + (missing.includes("nomic-embed-text") ? "⟳ nomic-embed-text" : "✓ nomic-embed-text") + "\nPreparando modelo...\nNo cierres esta ventana.";
+        runtimeMissingText.textContent = "Preparando modelo...";
+        prepareRuntimeButton.disabled = true;
+        const response = await fetch("/runtime/pull", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ models: missing }),
+        });
+        const payload = await readApiJson(response);
+        if (!response.ok) {
+          throw new Error((payload && (payload.detail || payload.message)) || "No se pudo iniciar la descarga");
+        }
+        await pollRuntimePullStatus();
+      }
+
+      async function pollRuntimePullStatus() {
+        const response = await fetch("/runtime/pull/status");
+        const payload = await readApiJson(response);
+        if (!response.ok) {
+          runtimeMissingText.textContent = "No fue posible consultar la descarga";
+          return;
+        }
+        if (payload && payload.status === "running") {
+          runtimeStatusText.textContent = "IA LOCAL\n✓ Ollama\n✓ llama3.2\n⟳ nomic-embed-text\nPreparando modelo...\nNo cierres esta ventana.";
+          runtimeMissingText.textContent = "Preparando modelo...";
+          window.setTimeout(pollRuntimePullStatus, 1000);
+        } else if (payload && payload.status === "completed") {
+          await loadRuntimeStatus();
+          runtimeMissingText.textContent = "✓ Entorno IA preparado";
+          prepareRuntimeButton.disabled = false;
+          prepareRuntimeButton.hidden = true;
+        } else if (payload && payload.status === "error") {
+          runtimeStatusText.textContent = "IA LOCAL\n✓ Ollama\n✓ llama3.2\n↓ nomic-embed-text\nFalta un modelo requerido";
+          runtimeMissingText.textContent = payload.message || "No fue posible descargar el modelo.";
+          prepareRuntimeButton.disabled = false;
+          prepareRuntimeButton.hidden = false;
+        } else {
+          await loadRuntimeStatus();
+        }
+      }
 
       async function respond() {
         sendButton.disabled = true;
@@ -190,12 +378,15 @@
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              session_id: sessionInput.value || "demo-session",
+              session_id: sessionInput.value || createSessionId(),
               message: messageInput.value,
             }),
           });
-          const body = await response.json();
-          if (!response.ok) throw new Error(body.detail || "Error en la respuesta");
+          const body = await readApiJson(response);
+          if (!response.ok) {
+            const detail = body && (body.detail || body.message || body.error);
+            throw new Error(detail || response.statusText || "Error en la respuesta");
+          }
           risk.textContent = body.decision.risk_level;
           human.textContent = body.decision.needs_human ? "escalar a humano" : "sin escalamiento";
           answer.textContent = body.response;
@@ -218,7 +409,11 @@
 
       async function loadDocuments() {
         const response = await fetch("/knowledge");
-        const body = await response.json();
+        const body = await readApiJson(response);
+        if (!response.ok) {
+          const detail = body && (body.detail || body.message || body.error);
+          throw new Error(detail || response.statusText || "Error cargando documentos");
+        }
         docs.innerHTML = "";
         for (const doc of body) {
           const item = document.createElement("li");
@@ -241,17 +436,29 @@
         try {
           const form = new FormData();
           form.append("file", fileInput.files[0]);
-          await fetch("/knowledge/upload", { method: "POST", body: form });
+          const response = await fetch("/knowledge/upload", { method: "POST", body: form });
+          const body = await readApiJson(response);
+          if (!response.ok) {
+            const detail = body && (body.detail || body.message || body.error);
+            throw new Error(detail || response.statusText || "Error subiendo documento");
+          }
           fileInput.value = "";
           await loadDocuments();
+        } catch (error) {
+          answer.textContent = error.message;
         } finally {
           uploadButton.disabled = false;
         }
       }
 
+      sessionInput.value = createSessionId();
+
+      prepareRuntimeButton.addEventListener("click", prepareRuntime);
       sendButton.addEventListener("click", respond);
       uploadButton.addEventListener("click", uploadDocument);
       refreshButton.addEventListener("click", loadDocuments);
+      newConversationButton.addEventListener("click", startNewConversation);
+      loadRuntimeStatus();
       loadDocuments();
     </script>
   </body>

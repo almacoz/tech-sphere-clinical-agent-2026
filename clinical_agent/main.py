@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
+from uuid import uuid4
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .agent import ClinicalAgent
 from .rag import RagStore
+from .runtime_manager import RuntimeManager
 from .schemas import AgentRequest, AgentResponse, DocumentRecord, SessionResetRequest
 
 app = FastAPI(title="Tech Sphere Clinical Agent", version="0.1.0")
@@ -19,6 +22,7 @@ agent = ClinicalAgent(
     rag_store,
     use_llm_extraction=os.getenv("CLINICAL_AGENT_USE_LLM", "1") != "0",
 )
+runtime_manager = RuntimeManager()
 
 
 @app.get("/", include_in_schema=False)
@@ -68,9 +72,32 @@ def delete_knowledge(document_id: str) -> dict[str, bool]:
     return delete_document(document_id)
 
 
+@app.get("/runtime/status")
+def runtime_status() -> dict[str, object]:
+    return runtime_manager.get_status()
+
+
+@app.post("/runtime/pull")
+async def runtime_pull(request: Request) -> dict[str, Any]:
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    status_code, result = runtime_manager.request_pull(payload)
+    return JSONResponse(status_code=status_code, content=result)
+
+
+@app.get("/runtime/pull/status")
+def runtime_pull_status() -> dict[str, Any]:
+    return runtime_manager.get_pull_status()
+
+
 @app.post("/agent/respond", response_model=AgentResponse)
 def respond(request: AgentRequest) -> AgentResponse:
-    return agent.answer(session_id=request.session_id, message=request.message)
+    session_id = request.session_id.strip() if request.session_id else str(uuid4())
+    return agent.answer(session_id=session_id, message=request.message)
 
 
 @app.post("/session/reset")
