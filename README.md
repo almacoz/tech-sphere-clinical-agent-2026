@@ -55,6 +55,17 @@ solicitar su preparación con el Runtime Manager sin tocar el pipeline clínico.
 Ollama debe estar instalado previamente en el sistema. La instalación de Ollama es
 responsabilidad del setup del proyecto.
 
+## Knowledge ingestion
+
+Supported knowledge formats:
+- PDF
+- TXT
+
+El endpoint `POST /knowledge/upload` acepta archivos con la extensión `.pdf` o `.txt`.
+PDF se lee localmente con `pypdf` y se extrae texto por página usando el separador `\f`
+para conservar la trazabilidad de `page` y `chunk_id` en el RAG actual. TXT se decodifica
+como UTF-8 y se pasa al mismo contrato `RagStore.upsert_document(filename, text)`.
+
 ## LLM
 
 Modelo: Llama 3.2 3B

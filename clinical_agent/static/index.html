@@ -104,6 +104,30 @@
         font-size: 13px;
       }
 
+      .pill.risk-green {
+        color: #107a3e;
+        background: #dcfce7;
+        border: 1px solid #86efac;
+      }
+
+      .pill.risk-red {
+        color: #b42318;
+        background: #fee4e2;
+        border: 1px solid #fda4af;
+      }
+
+      .pill.risk-yellow {
+        color: #9a6b00;
+        background: #fff7cc;
+        border: 1px solid #facc15;
+      }
+
+      .pill.risk-unknown {
+        color: #4b5563;
+        background: #e5e7eb;
+        border: 1px solid #94a3b8;
+      }
+
       pre {
         overflow: auto;
         padding: 12px;
@@ -175,10 +199,11 @@
 
       <section>
         <div class="row">
-          <input id="file" type="file" accept=".txt,text/plain" />
+          <input id="file" type="file" accept=".pdf,.txt,text/plain,application/pdf" />
           <button id="upload" class="secondary">Subir conocimiento</button>
           <button id="refresh" class="secondary">Actualizar lista</button>
         </div>
+        <div>Formatos soportados: PDF, TXT</div>
         <ul id="docs"></ul>
       </section>
     </main>
@@ -213,8 +238,24 @@
         sessionInput.value = nextSessionId;
         answer.textContent = "";
         risk.textContent = "sin ejecutar";
+        risk.className = "pill";
         human.textContent = "sin escalamiento";
         details.textContent = "{}";
+      }
+
+      function paintRiskLevel(level) {
+        const value = String(level || "").toUpperCase();
+        risk.textContent = value || "sin ejecutar";
+        risk.className = "pill";
+        if (value === "RED") {
+          risk.classList.add("risk-red");
+        } else if (value === "GREEN") {
+          risk.classList.add("risk-green");
+        } else if (value === "YELLOW") {
+          risk.classList.add("risk-yellow");
+        } else if (value === "UNKNOWN") {
+          risk.classList.add("risk-unknown");
+        }
       }
 
       async function readApiJson(response) {
@@ -387,7 +428,7 @@
             const detail = body && (body.detail || body.message || body.error);
             throw new Error(detail || response.statusText || "Error en la respuesta");
           }
-          risk.textContent = body.decision.risk_level;
+          paintRiskLevel(body.decision.risk_level);
           human.textContent = body.decision.needs_human ? "escalar a humano" : "sin escalamiento";
           answer.textContent = body.response;
           details.textContent = JSON.stringify(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import os
 from pathlib import Path
 from typing import Any
@@ -8,11 +9,14 @@ from uuid import uuid4
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pypdf import PdfReader
 
 from .agent import ClinicalAgent
 from .rag import RagStore
 from .runtime_manager import RuntimeManager
 from .schemas import AgentRequest, AgentResponse, DocumentRecord, SessionResetRequest
+
+SUPPORTED_REQUEST_SUFFIXES = {".txt", ".pdf"}
 
 app = FastAPI(title="Tech Sphere Clinical Agent", version="0.1.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -23,6 +27,51 @@ agent = ClinicalAgent(
     use_llm_extraction=os.getenv("CLINICAL_AGENT_USE_LLM", "1") != "0",
 )
 runtime_manager = RuntimeManager()
+
+
+def extract_document_text(filename: str, content: bytes) -> str:
+    suffix = Path(filename or "document.txt").suffix.lower()
+    if suffix not in SUPPORTED_REQUEST_SUFFIXES:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported document format. Supported formats: .txt, .pdf",
+        )
+
+    if suffix == ".txt":
+        try:
+            return content.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="Unable to decode TXT document as UTF-8.",
+            ) from exc
+
+    if suffix == ".pdf":
+        try:
+            reader = PdfReader(io.BytesIO(content))
+            pages = []
+            for page in reader.pages:
+                extracted = page.extract_text() or ""
+                pages.append(extracted)
+            text = "\f".join(pages)
+        except Exception as exc:
+            print(f"RuntimeManager/PDF ingestion error: {type(exc).__name__}: {exc}", flush=True)
+            raise HTTPException(
+                status_code=400,
+                detail="The PDF could not be read.",
+            ) from exc
+
+        if not text.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="The PDF does not contain extractable text.",
+            )
+        return text
+
+    raise HTTPException(
+        status_code=400,
+        detail="Unsupported document format. Supported formats: .txt, .pdf",
+    )
 
 
 @app.get("/", include_in_schema=False)
@@ -40,8 +89,13 @@ async def upload_document(file: UploadFile = File(...)) -> DocumentRecord:
     content = await file.read()
     if not content:
         raise HTTPException(status_code=400, detail="Uploaded document is empty")
-    text = content.decode("utf-8", errors="ignore")
-    return rag_store.upsert_document(file.filename or "document.txt", text)
+
+    filename = file.filename or "document.txt"
+    text = extract_document_text(filename, content)
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="Uploaded document is empty")
+
+    return rag_store.upsert_document(filename, text)
 
 
 @app.post("/knowledge/upload", response_model=DocumentRecord)
