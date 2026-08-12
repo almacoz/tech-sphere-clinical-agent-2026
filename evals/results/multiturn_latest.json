@@ -1,0 +1,32 @@
+{
+  "total_cases": 5,
+  "state_persistence": 1.0,
+  "correct_information_merge": 1.0,
+  "redundant_question_rate": 0.0,
+  "context_interpretation": 1.0,
+  "session_isolation": 1.0,
+  "contradiction_detection": 1.0,
+  "rows": [
+    {
+      "id": "session_persistence",
+      "state_persistence": true,
+      "correct_information_merge": true
+    },
+    {
+      "id": "redundant_question",
+      "no_redundant_question": true
+    },
+    {
+      "id": "contextual_answer",
+      "context_interpretation": true
+    },
+    {
+      "id": "session_isolation",
+      "session_isolation": true
+    },
+    {
+      "id": "contradiction",
+      "contradiction_detection": true
+    }
+  ]
+}

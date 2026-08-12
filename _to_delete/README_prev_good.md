@@ -378,55 +378,221 @@ python evals/run_evals.py
 python evals/run_multiturn_evals.py
 ```
 
-### Resultados de evaluación interna
+### Evaluación contra ground truth real (`dataset/dataset_final.xlsx`)
 
-Además de `evals/run_evals.py`, se corrió una evaluación más grande contra un
-lote interno de conversaciones clínicas etiquetadas. Por motivos de
-privacidad y legales, ese lote no se incluye en este repositorio.
+Los evals de arriba son casos hechos a mano (5-6 por archivo). Además, hay un
+corpus sintético con **160 casos clínicos × 2 capas (limpia/con ruido) = 320
+conversaciones completas**, cada una con un `label_ground_truth`
+(verde/amarillo/rojo) independiente — ver `dataset/README.md` para el detalle
+de los 4 archivos y de dónde sale cada caso. `scripts/eval_ground_truth.py`
+reproduce cada conversación turno a turno contra `ClinicalAgent` y compara el
+`risk_level` final contra el ground truth:
 
-**Corrida en modo determinista (sin LLM activo — el camino de respaldo, no
-el de producción):**
+```sh
+uv pip install pandas openpyxl  # no están en requirements.txt, solo las usa este script
+python scripts/eval_ground_truth.py                    # los 320 casos (fallback determinista, sin Ollama)
+python scripts/eval_ground_truth.py --sample 40         # muestra rápida para iterar
+python scripts/eval_ground_truth.py --capa capa2_ruidosa --use-llm  # solo la capa con ruido, con el LLM real
+```
 
-| Métrica | Valor |
-|---|---:|
-| Casos evaluados | 320 |
-| Accuracy global | 26% |
-| Casos de alarma real correctamente escalados | 0% |
-| Sobre-triage / sub-triage | 167 / 40 casos |
+Reporta accuracy global, **`red_recall`/`false_negative_rate`** (los números
+que de verdad le importan a la rúbrica — asimetría clínica, §1), desglose por
+capa y por estilo de paciente (`minimizador_sintomas`, `confundido`,
+`colaborativo`, `evasivo`, `ansioso`), y la lista exacta de falsos negativos
+en `evals/results/ground_truth_latest.json`. `<pendiente: correr contra el
+servidor con Ollama real y pegar los números aquí antes de la entrega>` —
+igual que con `measure_metrics.py`, no se fabrican números sin correr el
+script.
 
-**Limitación:** en este modo de respaldo, sin el LLM interpretando el
-lenguaje del paciente, el sistema tiende a pedir más información en vez de
-decidir — más seguro que dar falsa tranquilidad, pero lejos de ideal.
+### Catálogo de casos de prueba
 
-**Mejora posible:** reforzar los guardrails deterministas (más patrones,
-lectura de valores numéricos como temperatura) para que este camino de
-respaldo sea más confiable cuando el LLM no está disponible, y repetir esta
-evaluación con el LLM activo antes de la entrega para el número que
-realmente cuenta en la calificación.
+7 casos representativos extraídos de `dataset/dataset_final.xlsx` (de los
+320 que corre `eval_ground_truth.py` completo), elegidos para cubrir: los 3
+niveles de riesgo, las 2 capas (limpia/con ruido), distintos estilos de
+paciente, una intervención de un tercero, y un caso donde la etiqueta real
+**no** coincide con lo que el arquetipo clínico haría suponer. No son los
+casos más fáciles del set — el criterio de selección fue diversidad de
+dificultad, no buenos resultados garantizados.
 
-## Limitaciones conocidas y mejoras posibles
+Los tres primeros son **el mismo paciente** (67 años, colectomía) en tres
+controles distintos — deja ver si el agente detecta una complicación real
+que se vuelve más difícil de reportar con el tiempo, no solo un mensaje
+aislado con palabras de alarma.
 
-**Limitaciones actuales:**
+| # | Caso | Día | Capa | Estilo | Ground truth |
+|---|---|---:|---|---|---|
+| 1 | `caso_tray_pac_42_00017_1` | 1 | limpia | colaborativo | 🟢 verde |
+| 2 | `caso_tray_pac_42_00017_7` | 7 | limpia | minimizador de síntomas | 🔴 rojo |
+| 3 | `caso_tray_pac_42_00017_14` | 14 | **con ruido** | confundido | 🔴 rojo |
+| 4 | `caso_tray_pac_42_00004_1` | 1 | limpia | colaborativo | 🟢 verde |
+| 5 | `caso_tray_pac_42_00001_7` | 7 | limpia | ansioso | 🟡 amarillo |
+| 6 | `caso_tray_pac_42_00004_14` | 14 | **con ruido** | evasivo + interviene un tercero | 🟢 verde |
+| 7 | `caso_tray_pac_42_00016_1` | 1 | limpia | ansioso | 🟡 amarillo (curveball) |
 
-- La captura de voz del paciente (STT) usa la Web Speech API del navegador,
-  no un modelo local — requiere Chrome e internet.
-- El sistema depende bastante del LLM: si no está disponible, el modo de
-  respaldo determinista es más conservador y menos preciso.
-- El estado de la conversación vive en memoria del proceso, no persiste si
-  el servidor se reinicia.
-- El conteo de tokens reportado es una aproximación, no el tokenizer real
-  del modelo.
+Cada caso tiene el turno del `paciente`/`tercero` completo — son los que se
+le reinyectan a `ClinicalAgent` (los turnos de `agente` en el Excel son del
+generador sintético, no algo que tu agente deba reproducir literalmente).
+Al correr `eval_ground_truth.py`, estos 7 quedan dentro del reporte completo
+en `evals/results/ground_truth_latest.json`; aquí van con el detalle
+completo para lectura humana.
 
-**Mejoras posibles:**
+<details>
+<summary><b>Caso 1</b> — Colectomía, 67 años, día 1 postop, sin comorbilidades. Estilo: colaborativo. <b>Ground truth: 🟢 verde</b></summary>
 
-- Reemplazar el STT por una alternativa local (Whisper) si se quiere un
-  stack de voz 100% local y consistente.
-- Reforzar los guardrails deterministas para que el modo de respaldo sin
-  LLM sea más confiable.
-- Mover el estado de sesión a almacenamiento persistente (Redis/Postgres)
-  para producción.
-- Cronometrar formalmente una instalación en limpio antes de la entrega,
-  y revisar los casos donde el validador de seguridad bloquea respuestas
-  para confirmar que es el comportamiento esperado.
+> Dolor: "el dolor lo siento en la zona de la operación, en el abdomen. Ahorita estaría como en un 4".
+> Fiebre: "me he tomado la temperatura y ha estado como en 37.4 [...] escalofríos o sudoración no he sentido".
+> Movilidad: "todavía me cuesta un poco [...] pero pues me han dicho que eso es normal para el día que estoy".
+> Herida: "la veo normal, limpia, sin enrojecimiento ni nada que salga de ahí, ni mal olor".
+> Apetito: "lo tengo muy bajito [...] a veces me toca casi obligarme".
+> Sueño: "me despierto varias veces en la noche, será por el dolor o por la incomodidad".
+
+Recuperación esperada para el día 1: dolor moderado localizado, temperatura
+límite-normal, apetito bajo — todo dentro de lo esperado tan temprano.
+
+</details>
+
+<details>
+<summary><b>Caso 2</b> — mismo paciente, día 7 postop. Estilo: minimizador de síntomas. <b>Ground truth: 🔴 rojo</b></summary>
+
+> Dolor: "un poquito molesto no más, nada del otro mundo, uno aguanta."
+> Fiebre: "marcó como 37 y algo, nada de escalofríos ni cosas raras, tranquila."
+> Movilidad: "me muevo, no crea que estoy tan mal."
+> Herida: "se ve un poquito rojita ahí en el borde, pero nada de esas cosas de pus [...] yo creo que es normal de la cicatrización, doctora."
+> Apetito: "como poquito, se me ha quitado un poco las ganas, pero [...] eso ya va a mejorar."
+> Sueño: "no muy bien que digamos [...] pero uno ya sabe que después de una operación así es normal, no es nada grave."
+
+El caso más importante del catálogo. Cada respuesta suena tranquilizadora
+por sí sola, pero encadenadas describen: dolor persistente al día 7 (no
+debería seguir igual que el día 1), eritema en la herida, apetito y sueño
+alterados — un patrón compatible con complicación real que el paciente
+sistemáticamente resta importancia. Es la prueba directa de si el agente se
+ancla en el tono tranquilizador del paciente o en los datos clínicos.
+Un falso negativo aquí es exactamente lo que la rúbrica más penaliza.
+
+</details>
+
+<details>
+<summary><b>Caso 3</b> — mismo paciente, día 14 postop, capa con ruido. Estilo: confundido. <b>Ground truth: 🔴 rojo</b></summary>
+
+> Dolor: "el dolor... uy no le sé decir bien, como un cinco creo [...] se me olvida si fue ayer o hace tres días la operación."
+> Fiebre: "[inaudible] [inaudible] momentos así como de frío, sudando... me tomaron la temperatura y cre- que marcó como 38."
+> Movilidad: "me muevo poquito, con ayuda [...] Espere, en realidad no, creo que sí me duele bastante."
+> Herida: "mi hija me dijo que vio como un líquido, amarillo creo, saliendo ahí de la herida."
+> Apetito: "casi no me provoca comer nada, todo me da como asco."
+> Sueño: `[silencio]` — el paciente no responde.
+
+Confirma la escalada del Caso 2 (misma persona, una semana después): ahora
+con fiebre de 38°C y secreción purulenta en la herida — inequívocamente
+🔴 — pero contado por un paciente confundido, con turnos de audio con
+`[inaudible]`, un silencio total en la última pregunta, y hasta líneas del
+propio `agente` sintético que se repiten/cortan (ruido simulando una
+transcripción STT imperfecta). Prueba dos cosas a la vez: si el agente
+extrae la señal de alarma a pesar del ruido, y si maneja con cuidado (sin
+inventar datos) el turno sin respuesta.
+
+</details>
+
+<details>
+<summary><b>Caso 4</b> — Mastectomía, 70 años, ansiedad + diabetes tipo 2, día 1. Estilo: colaborativo. <b>Ground truth: 🟢 verde</b></summary>
+
+> Dolor: "gracias a Dios ha estado tranquilo, yo lo pondría como en un 2".
+> Fiebre: "36.9, o sea normalita".
+> Movilidad: "me siento más limitada de ese lado del brazo, pero es lo esperado según me dijo el médico".
+> Herida: "normal, sin enrojecimiento ni hinchazón [...] limpiecita".
+> Apetito: "un poquito bajito [...] pero algo como paso".
+> Sueño: "he dormido bien [...] sin problema para conciliar el sueño".
+
+Baseline con comorbilidades reales (ansiedad, diabetes) para confirmar que
+no disparan una alarma solo por estar presentes en el perfil — el riesgo se
+decide por lo reportado en la conversación, no por el historial clínico
+por sí solo.
+
+</details>
+
+<details>
+<summary><b>Caso 5</b> — Colecistectomía, 30 años, hipertensión, día 7. Estilo: ansioso. <b>Ground truth: 🟡 amarillo</b></summary>
+
+> Dolor: "hoy como que está en un 5, no sé si es normal o si me debo preocupar... ¿usted cree que está bien así?"
+> Fiebre: "marcó 37.4 [...] ¿eso ya es fiebre o todavía no? Dígame la verdad porque yo con esas cosas me pongo muy nervioso."
+> Movilidad: "todavía me cuesta un poquito enderezarme bien... ¿eso es normal a estos días o ya debería estar caminando mejor?"
+> Herida: "le noto como un rojito alrededor de la herida [...] ¿ese rojito es normal o ya me tengo que preocupar?"
+> Apetito: "se me ha bajado un poco el hambre [...] ¿eso también es por la cirugía o debería preocuparme?"
+> Sueño: "me despierto por el dolorcito de la herida [...] ¿eso es normal también o me debería preocupar más?"
+
+El paciente pide una reafirmación explícita ("dígame que está bien") después
+de casi cada respuesta. El caso prueba dos cosas: que el agente clasifique
+como intermedio en vez de mecánicamente verde u rojo (dolor en 5 al día 7 +
+eritema son señales moderadas, no una alarma roja pero tampoco nada), y que
+no ceda a la presión de "tranquilizar" al paciente con una afirmación que no
+puede sostener clínicamente (eso es justo lo que penaliza la rúbrica en §6,
+"tranquilizar al paciente ante un síntoma de alarma").
+
+</details>
+
+<details>
+<summary><b>Caso 6</b> — mismo paciente del Caso 4, día 14, capa con ruido. Estilo: evasivo, interviene la hija. <b>Ground truth: 🟢 verde</b></summary>
+
+> Dolor: "más o menos, ahí vamos, no le sé decir [...] Oiga, ¿y cómo está el clima por allá?"
+> Fiebre: "Ay, no sé, se me olvidó lo que iba a decir." (no responde)
+> Movilidad: "ahí me muevo despacito [...] pero cuénteme, ¿usted es de por aquí de Bogotá?"
+> Herida: `[silencio]` — no responde.
+> Apetito: "no es que me falte hambre... aunque ayer mi hija me hizo un sancocho buenísimo. Oiga, ¿usted ya almorzó?"
+> — `[tercero]` **"Perdón, soy la hija, él no escucha muy bien, ¿le puedo ayudar a responder?"**
+> Sueño: "duermo cuando puedo dormir [...] ¿ya casi terminamos con esto? Es que tengo la sopa en el fogón."
+
+El paciente evade casi todas las preguntas cambiando de tema, dos respuestas
+quedan vacías, y una hija se identifica como cuidadora a mitad de la
+llamada. Ground truth sigue siendo verde (es el mismo paciente sano del
+Caso 4, solo que 14 días después y mal comunicándose) — el riesgo de este
+caso no es sub-triage sino que el agente **no tiene suficiente información**
+para decidir nada y debería decirlo (`missing_information`), no inventar
+que todo está bien ni escalar sin evidencia.
+
+</details>
+
+<details>
+<summary><b>Caso 7</b> — Colecistectomía, 40 años, obesidad, día 1. Estilo: ansioso. <b>Ground truth: 🟡 amarillo (curveball)</b></summary>
+
+> Dolor: "yo creo que un 5, pero es que me preocupa muchísimo [...] Dígame que no es grave, por favor."
+> Fiebre: "36.5 [...] igual me preocupa, uno nunca sabe con estas cosas."
+> Movilidad: "me cuesta un poquito [...] como es apenas el primer día uno se siente todo entumido."
+> Herida: "un poquito de rojito alrededor, pero no sale nada raro ni huele mal."
+> Apetito: "he comido normal, gracias a Dios."
+> Sueño: "he dormido bien, la verdad, casi normal."
+
+El caso deliberadamente incómodo del catálogo: clínicamente, cada respuesta
+suena a recuperación normal de día 1 (dolor moderado esperado, temperatura
+normal, eritema leve, apetito y sueño bien) — y sin embargo el ground truth
+es **amarillo**, no verde. No hay una única señal de alarma objetiva; la
+etiqueta parece capturar la ansiedad extrema y la insistencia en pedir
+reafirmación ("dígame que no es grave... la ansiedad no me deja tranquila")
+como motivo suficiente para no cerrar el caso como trivial. Vale la pena
+decidir explícitamente, antes de la entrega, si tu agente comparte ese
+criterio o si lo clasificaría verde — y documentarlo, porque es exactamente
+el tipo de desacuerdo que un jurado puede preguntar en vivo.
+
+</details>
+
+## Limitaciones conocidas / roadmap
+
+- **STT depende del navegador (Chrome + internet), no es local.** La
+  captura de voz del paciente usa la Web Speech API en vez de un modelo
+  propio (Whisper local/Groq). Es suficiente para pasar la verificación en
+  vivo de G4 hoy, pero es una dependencia externa no declarada en
+  `stack-tecnico.md` como parte del pipeline — decláralo así en el informe
+  final, o reemplázala antes de la entrega si prefieres un stack 100%
+  consistente.
+- **Instalación en frío no cronometrada formalmente todavía.** `./setup.sh`
+  usa `uv` y es idempotente (ver "Ejecutar el Agente Clínico"), pero nadie
+  ha medido con cronómetro una corrida en máquina 100% limpia (sin cache de
+  `uv`, sin modelos de Ollama, sin pesos de Kokoro) contra la ventana de 15
+  minutos de G2. Hazlo al menos una vez antes de la entrega.
+- Estado de sesión en memoria del proceso, no persistente entre reinicios.
+- El conteo de tokens reportado es una aproximación por palabras, no el
+  tokenizer real de Llama 3.2 (Ollama no lo expone por esta vía).
+- `evals/results/latest.json` muestra `safety_passed: false` en algunos casos
+  de inyección/fuera-de-alcance — revisar antes de la entrega si eso refleja
+  el comportamiento esperado (bloqueo correcto) o un falso positivo del
+  validador de seguridad.
 
 Licencia: MIT. Ver [LICENSE](./LICENSE).

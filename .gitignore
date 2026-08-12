@@ -11,6 +11,9 @@ data/
 # If you keep tiny sample docs for demos, add an allow-rule instead, e.g.:
 # !data/sample_docs/
 
+# Datasets/corpus de evaluación de terceros -- nunca committear (privacidad/legal)
+dataset/
+
 # Python / virtualenv
 .venv/
 venv/

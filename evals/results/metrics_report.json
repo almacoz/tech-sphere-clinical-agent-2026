@@ -1,0 +1,27 @@
+{
+  "runs": 20,
+  "latency_ms": {
+    "p50": 1847.5,
+    "p95": 2584.4,
+    "mean": 1939.5,
+    "min": 796,
+    "max": 6544
+  },
+  "rag_queries_per_turn_mean": 1,
+  "model_invocations_per_turn_mean": 1,
+  "tokens_per_turn": {
+    "input_mean_approx": 8.9,
+    "output_mean_approx": 34.1,
+    "note": "Aproximacion por conteo de palabras * 1.3. Ollama no expone el conteo real de tokens del tokenizer de Llama 3.2 por esta via; se documenta como estimacion, no como medicion exacta."
+  },
+  "voice_mode": false,
+  "cost_estimate": {
+    "assumed_turns_per_call": 4,
+    "price_per_1k_input_tokens_usd": 0.035,
+    "price_per_1k_output_tokens_usd": 0.06,
+    "estimated_cost_per_turn_usd": 0.002357,
+    "estimated_cost_per_call_usd": 0.00943,
+    "rag_queries_per_call_estimate": 4,
+    "note": "Corre 100% local (Ollama, costo real $0). Este estimado extrapola a precios de referencia de un proveedor cloud equivalente, tal como exige la rubrica para soluciones locales. Ajusta --price-per-1k-input/--price-per-1k-output al proveedor que cites en tu informe final."
+  }
+}
