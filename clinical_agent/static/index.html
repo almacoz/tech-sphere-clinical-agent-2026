@@ -445,15 +445,19 @@
         }
 
         turnSourcePill.className = "pill";
-        if (metrics.fallback_used) {
-          turnSourcePill.textContent = "Respuesta determinista (sin LLM)";
-          turnSourcePill.classList.add("risk-yellow");
-        } else if (metrics.llm_status === "ok") {
+        if (!metrics.fallback_used) {
+          // fallback_used=false solo ocurre cuando el backend confirmó
+          // llm_status="success" (ver ClinicalAgent.extract_clinical). No se
+          // compara contra un string de estado porque el backend nunca emite
+          // "ok" -- comparar contra fallback_used es la fuente de verdad real.
           turnSourcePill.textContent = `LLM: ${metrics.llm_provider || "?"} / ${metrics.llm_model || "?"}`;
           turnSourcePill.classList.add("risk-green");
-        } else {
-          turnSourcePill.textContent = `LLM: ${metrics.llm_status || "desconocido"}`;
+        } else if (metrics.llm_status && metrics.llm_status !== "unavailable") {
+          turnSourcePill.textContent = `Respuesta determinista (LLM falló: ${metrics.llm_status})`;
           turnSourcePill.classList.add("risk-red");
+        } else {
+          turnSourcePill.textContent = "Respuesta determinista (sin LLM)";
+          turnSourcePill.classList.add("risk-yellow");
         }
 
         const inTok = metrics.input_tokens ?? "–";

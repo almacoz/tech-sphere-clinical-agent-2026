@@ -87,6 +87,8 @@ class ClinicalAgent:
         self.last_llm_model = "llama3.2"
         self.last_llm_status = "unavailable"
         self.last_llm_fallback_used = True
+        self.last_llm_input_tokens = 0
+        self.last_llm_output_tokens = 0
         self.session_store = session_store or SessionStore()
 
     def answer(self, session_id: str, message: str) -> AgentResponse:
@@ -175,9 +177,15 @@ class ClinicalAgent:
             llm_latency_ms=self.last_llm_latency_ms,
             decision_latency_ms=decision_latency_ms,
             safety_latency_ms=safety_latency_ms,
-            input_tokens=count_tokens(message),
-            output_tokens=count_tokens(final_response),
-            token_accounting="estimado (palabras, no tokenizer real)",
+            input_tokens=self.last_llm_input_tokens,
+            output_tokens=self.last_llm_output_tokens,
+            token_accounting=(
+                "estimado (palabras, no tokenizer real); mide el prompt de sistema + "
+                "contexto realmente enviado al LLM y su respuesta JSON cruda -- no el "
+                "mensaje del paciente ni la respuesta final (esa es determinista, no "
+                "la genera el LLM). 0/0 cuando el turno cayó a fallback sin que el "
+                "modelo llegara a responder."
+            ),
             llm_provider=self.last_llm_provider,
             llm_model=self.last_llm_model,
             llm_status=self.last_llm_status,
@@ -219,18 +227,32 @@ class ClinicalAgent:
         self.last_llm_model = "unknown"
         self.last_llm_status = "unavailable"
         self.last_llm_fallback_used = True
+        self.last_llm_input_tokens = 0
+        self.last_llm_output_tokens = 0
         if self.use_llm_extraction:
             try:
                 llm_started = time.perf_counter()
+                # Guardamos el texto real que se envia al LLM (prompt de sistema +
+                # mensaje contextual) para poder medir tokens de entrada/salida
+                # sobre lo que de verdad se consume, no sobre el mensaje crudo del
+                # paciente ni sobre la respuesta final (que es determinista, no la
+                # genera el LLM). Antes se contaban esos dos como si fueran el
+                # consumo del modelo, lo cual subestimaba la entrada (ignoraba el
+                # prompt de sistema y el contexto) y medía la salida equivocada.
+                extraction_input_text = contextual_extraction_message(message, session)
                 raw_response = generate_json_raw(
                     clinical_extraction_prompt,
-                    contextual_extraction_message(message, session),
+                    extraction_input_text,
                 )
                 self.last_llm_latency_ms = elapsed_ms(llm_started)
                 self.last_llm_provider = "ollama"
                 self.last_llm_model = "llama3.2"
                 self.last_llm_status = "success"
                 self.last_llm_fallback_used = False
+                self.last_llm_input_tokens = count_tokens(clinical_extraction_prompt) + count_tokens(
+                    extraction_input_text
+                )
+                self.last_llm_output_tokens = count_tokens(raw_response)
                 if debug_llm_enabled():
                     print("\n========== LLM RAW RESPONSE ==========")
                     print(raw_response)
@@ -294,6 +316,14 @@ class ClinicalAgent:
                 self.last_llm_model = "llama3.2"
                 self.last_llm_status = "invalid_json"
                 self.last_llm_fallback_used = True
+                # El LLM sí respondió (por eso llegamos a parsear su JSON), así que
+                # sí hubo consumo de tokens aunque el turno caiga a fallback.
+                if "extraction_input_text" in locals():
+                    self.last_llm_input_tokens = count_tokens(clinical_extraction_prompt) + count_tokens(
+                        extraction_input_text
+                    )
+                if "raw_response" in locals():
+                    self.last_llm_output_tokens = count_tokens(raw_response)
                 audit_steps.append(
                     _fallback_audit_step(
                         "El LLM devolvió JSON inválido; se usó la extracción "
@@ -316,6 +346,14 @@ class ClinicalAgent:
                 self.last_llm_model = "llama3.2"
                 self.last_llm_status = "schema_error"
                 self.last_llm_fallback_used = True
+                # El LLM sí respondió (el error es de validación del contrato, no
+                # de la llamada en sí), así que sí hubo consumo de tokens.
+                if "extraction_input_text" in locals():
+                    self.last_llm_input_tokens = count_tokens(clinical_extraction_prompt) + count_tokens(
+                        extraction_input_text
+                    )
+                if "raw_response" in locals():
+                    self.last_llm_output_tokens = count_tokens(raw_response)
                 audit_steps.append(
                     _fallback_audit_step(
                         "La salida del LLM no cumplió el contrato ClinicalExtraction "
