@@ -18,199 +18,31 @@ métricas por turno.
 | G5 — Conocimiento vivo | ✅ | Subir/eliminar documento vía consola cambia lo que el agente recupera (`RagStore.upsert_document` / `delete_document`) |
 
 **Este README documenta el sistema tal como está implementado, no como se
-aspira a que quede.** Antes de dar por cerrado G4, prueba el loop completo
-en Chrome: clic en "🎤 Hablar", di algo, confirma que el texto se transcribe,
-marca "Responder con voz" y confirma que el agente contesta en audio.
+### Evaluaciones y resultados
 
-## Arquitectura
+Por motivos de privacidad y legales, los datasets usados para pruebas no
+se incluyen en este repositorio. En su lugar, los scripts de evaluación
+(`evals/` y `scripts/`) están disponibles y guardan sus salidas en
+`evals/results/` cuando se ejecutan localmente con los datos apropiados.
 
-```
-Paciente (texto, por ahora)
-   │  POST /agent/respond {session_id, message}
-   ▼
-ClinicalAgent.answer()
-   │
-   ├─ 1. extract_clinical()          → LLM (Llama 3.2 / Ollama) + overrides deterministas de seguridad
-   ├─ 2. merge_clinical_state()      → fusiona con el estado previo de la sesión (en memoria)
-   ├─ 3. rag_store.query()           → ChromaDB + embeddings Ollama (nomic-embed-text)
-   ├─ 4. evaluate()                  → EvidenceEvaluation (riesgo, evidencia, missing_information)
-   ├─ 5. decide()                    → Decision (risk_level, needs_human, reason_codes) — determinista, no LLM
-   ├─ 6. generate_response()         → texto para el paciente, basado en plantillas + evidencia citada
-   └─ 7. validate_safety()           → validador de seguridad basado en reglas (no LLM), puede bloquear la respuesta
-   ▼
-AgentResponse {response, decision, evidence, safety_validation, summary, metrics}
-```
+Si tienes los datasets localmente, puedes correr los evals y los resultados
+quedarán en `evals/results/ground_truth_latest.json` y
+`evals/results/latest.json`.
 
-Puntos de diseño relevantes:
-
-- **Solo una llamada al LLM por turno** (la extracción clínica). La
-  clasificación de riesgo, la generación de la respuesta y la validación de
-  seguridad son deterministas — no dependen de que el LLM "decida" nada
-  clínicamente. Esto reduce latencia, costo y superficie de alucinación.
-- **Fallback determinista.** Si Ollama no responde o devuelve JSON inválido,
-  `extract_clinical` cae a `contextual_deterministic_extract_clinical` (regex
-  sobre el mensaje) en vez de fallar la conversación.
-- **Overrides de seguridad deterministas.** Independiente de lo que devuelva
-  el LLM, `apply_deterministic_safety_overrides` vuelve a correr los patrones
-  de `ALARM_PATTERNS` sobre el mensaje crudo y los fusiona con `alarm_signals`.
-  Esto es intencional (cinturón de seguridad contra que el LLM omita una
-  señal de alarma), pero también fue la causa de un bug corregido el
-  2026-08-12: el patrón de `fiebre_alta` disparaba con solo mencionar la
-  palabra "fiebre", incluso en preguntas informativas ("¿qué información
-  tienes sobre la fiebre?"). Se corrigió exigiendo un calificador
-  (`fiebre alta/elevada/...`) y detectando preguntas puras sin afirmación de
-  síntoma antes de extraer. Ver `clinical_agent/agent.py::_is_pure_information_query`.
-
-## Ejecutar el Agente Clínico
-
-**Requisito previo (no cuenta como paso, es infraestructura — igual que
-tener Python instalado):** [Ollama](https://ollama.com) instalado y
-corriendo. Si falta, `./setup.sh` se detiene con un mensaje claro en vez de
-fallar a medias.
-
-**3 pasos:**
+Comandos útiles (solo si dispones de los datos):
 
 ```sh
-# 1) Entra al proyecto
-cd tech-sphere-clinical-agent-2026
+# correr evaluaciones etiquetadas
+python evals/run_evals.py
+python evals/run_multiturn_evals.py
 
-# 2) Prepara todo: crea el venv con uv, instala dependencias, descarga los
-#    modelos de Ollama solo si faltan, instala espeak-ng si falta, y
-#    precalienta Kokoro-82M (así la voz queda lista desde el primer request,
-#    no falla en silencio la primera vez que alguien la pide)
-./setup.sh
-
-# 3) Levanta el servidor
-./start.sh
+# evals contra ground-truth (requiere datasets locales)
+python scripts/eval_ground_truth.py
 ```
 
-Abre `http://localhost:8000` para la consola (chat + administración de
-conocimiento).
-
-**Sobre el tiempo real (honestidad ante todo, sin inflar números):**
-`./setup.sh` es idempotente — los pulls de Ollama y el precalentado de
-Kokoro se saltan si ya están hechos. Eso significa que:
-
-- **Primera vez en una máquina limpia:** el tiempo depende de tu conexión a
-  internet. Se descargan una sola vez los pesos de Ollama (`llama3.2` ≈2 GB,
-  `nomic-embed-text` ≈270 MB) y las dependencias de voz (Kokoro ≈80 MB +
-  `torch`, unos cientos de MB). Con banda ancha normal esto entra cómodo
-  dentro de los 15 minutos de G2.
-- **Ejecuciones posteriores** (por ejemplo, correr `./setup.sh` una vez
-  antes de la demo para dejar todo cacheado, y volver a correrlo justo antes
-  de la evaluación): segundos, porque `uv` reutiliza su cache de paquetes y
-  ni Ollama ni Kokoro vuelven a descargar nada.
-
-Para acercarte de verdad a los 5 minutos frente al jurado, la recomendación
-es correr `./setup.sh` con anticipación (deja todo cacheado) y que la
-ejecución cronometrada sea la segunda. No hemos fabricado un número de
-"instalación en frío" porque ese tiempo está fuera de nuestro control (ancho
-de banda del evaluador) — ver "Métricas obligatorias" más abajo para la
-misma política aplicada a latencia/costo.
-
-## LLM
-
-**Modelo: Llama 3.2 3B, vía Ollama, inferencia 100% local.**
-
-Por qué se eligió esta familia (documentar también en el informe final con el
-detalle específico de tu caso):
-- Cumple la compuerta G3 (familia permitida: Meta Llama, serie 3.x, local).
-- Costo $0 — no depende de cuota ni de conectividad durante la evaluación en
-  vivo, lo que reduce el riesgo de que la sesión evaluada falle por límites
-  de un nivel gratuito de nube.
-- Corre en el rango de hardware descrito en `stack-tecnico.md` (8–16 GB RAM,
-  CPU), suficiente porque el agente le pide al LLM una única tarea acotada
-  (extracción de JSON estructurado), no razonamiento clínico abierto.
-
-La extracción clínica usa Ollama por defecto y valida la salida con Pydantic
-(`ClinicalExtraction.model_validate`). Si Ollama no responde o devuelve JSON
-inválido, el agente vuelve a la extracción determinista. Para desactivar
-Ollama durante pruebas locales:
-
-```sh
-CLINICAL_AGENT_USE_LLM=0 uvicorn clinical_agent.main:app --reload --port 8000
-```
-
-Para ver en consola el prompt, la respuesta cruda del LLM y cada paso de la
-extracción:
-
-```sh
-CLINICAL_AGENT_DEBUG_LLM=1 uvicorn clinical_agent.main:app --reload --port 8000
-```
-
-## RAG
-
-Vector store local persistente con embeddings locales.
-
-- LLM = Ollama / Llama 3.2 (solo para extracción, no para retrieval)
-- Embeddings = `nomic-embed-text` vía Ollama
-- Vector DB = ChromaDB persistente (`chromadb.PersistentClient`, similitud coseno)
-- Chunking = `chunk_size = 120` tokens, `overlap = 24`, respeta separación de
-  página (`\f`) para trazabilidad
-- Retrieval = top-k (`top_k=4` por defecto) con `document_id`, `filename`,
-  `page`, `chunk_id`, `quote_or_excerpt`, `retrieval_score` y `relevance` en
-  cada `EvidenceItem`
-- Cada consulta se registra en `RagStore.query_log` con latencia de
-  recuperación, útil para las métricas de §5 de la rúbrica
-
-La colección vectorial se persiste bajo `CHROMA_PERSIST_DIR` (por defecto
-`./data/chroma`), con el modelo de embedding configurado por
-`EMBEDDING_MODEL`.
-
-```sh
-cp .env.example .env
-# ajustar CHROMA_PERSIST_DIR y EMBEDDING_MODEL si hace falta
-```
-
-### Conocimiento vivo (G5)
-
-`POST /knowledge/upload` (alias de `POST /documents`) indexa un PDF o TXT;
-`DELETE /knowledge/{document_id}` lo elimina del índice vectorial y de las
-respuestas futuras. `tests/test_agent.py::test_document_lifecycle_removes_deleted_document_from_retrieval`
-cubre exactamente este ciclo (subir → responder citando el documento →
-eliminar → responder sin evidencia).
-
-## Knowledge ingestion
-
-Formatos soportados: PDF y TXT. PDF se lee localmente con `pypdf`, extrayendo
-texto por página (separador `\f`) para conservar `page`/`chunk_id`. TXT se
-decodifica como UTF-8. Ambos pasan por `RagStore.upsert_document(filename, text)`.
-
-## Voz
-
-### TTS — Kokoro-82M (respuesta hablada)
-
-[Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) (Apache-2.0, 82M
-parámetros, corre en CPU, sin token de HuggingFace) sintetiza la respuesta
-del agente a WAV 24kHz, 100% local.
-
-- Instalación: automática al correr `./setup.sh` (paso 2 de "Ejecutar el
-  Agente Clínico") — instala `kokoro`/`soundfile` vía `uv`, instala
-  `espeak-ng` (fallback de fonemización) vía Homebrew/apt, y precalienta el
-  pipeline para descargar/cachear los pesos del modelo antes de que arranque
-  el servidor. Ver también `stack-tecnico.md`.
-- Voz por defecto: `ef_dora` (español, femenina). También disponibles
-  `em_alex` y `em_santa` (español, masculinas) — ver
-  [VOICES.md](https://huggingface.co/hexgrad/Kokoro-82M/blob/main/VOICES.md)
-  del modelo para la lista completa de idiomas/voces.
-- `GET /tts/status` — reporta si Kokoro/soundfile están instalados y listos.
-- `POST /tts {"text": "...", "voice": "ef_dora"}` — sintetiza cualquier texto
-  suelto, devuelve `audio/wav` crudo.
-- `POST /agent/respond?voice=true` — el mismo endpoint clínico de siempre,
-  pero además sintetiza `response` con Kokoro, la agrega en
-  `audio_base64` (WAV en base64) y **suma la latencia de síntesis a
-  `metrics.total_latency_ms` / `metrics.tts_latency_ms`** — así el P50/P95
-  reportado en §5 refleja la definición real de la rúbrica ("desde que el
-  paciente termina de hablar hasta que empieza a sonar el audio del
-  agente"), no solo el razonamiento de texto.
-- Si Kokoro no está instalado, `voice=true` **no rompe la respuesta**: el
-  turno sigue devolviendo texto normal, con `metrics.tts_error` explicando
-  por qué no hay audio. La voz es una capa opcional sobre el mismo pipeline
-  clínico, nunca un requisito para que `/agent/respond` funcione.
-
-### STT — captura de voz del paciente (Web Speech API del navegador)
-
-El botón "🎤 Hablar" de la consola usa `webkitSpeechRecognition` /
+Los reportes resultantes contienen métricas clave (accuracy, `red_recall`,
+`false_negative_rate`) y los JSON de salida que se pueden revisar antes de
+la entrega pública.
 `SpeechRecognition` del navegador (`lang="es-ES"`) para transcribir a texto
 y rellenar el mensaje del paciente. **Esto es un atajo pragmático, no una
 pieza del pipeline local**: funciona en Chrome, requiere conexión a
