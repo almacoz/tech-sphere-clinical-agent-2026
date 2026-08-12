@@ -29,7 +29,7 @@ Una decisión clínica **no depende exclusivamente del LLM**. El modelo se utili
 
 ## Arquitectura
 
-![Arquitectura y flujo de decisión del Tech Sphere Clinical Agent 2026](docs/architecture.jpeg)
+![Arquitectura y flujo de decisión del Tech Sphere Clinical Agent 2026](docs/architecture.png)
 
 Versión en texto del mismo flujo, para lectura sin imágenes:
 
