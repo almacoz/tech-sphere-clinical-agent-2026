@@ -26,7 +26,7 @@ from .schemas import (
 
 SUPPORTED_REQUEST_SUFFIXES = {".txt", ".pdf"}
 
-app = FastAPI(title="Tech Sphere Clinical Agent", version="0.1.0")
+app = FastAPI(title="Agente Clínico Postoperatorio", version="0.1.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 rag_store = RagStore()

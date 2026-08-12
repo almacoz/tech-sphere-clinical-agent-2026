@@ -60,6 +60,16 @@ KNOWN_BODY_LOCATIONS = [
     "espalda",
     "cuello",
     "brazo",
+    "pie",
+    "mano",
+    "rodilla",
+    "tobillo",
+    "hombro",
+    "cadera",
+    "codo",
+    "muñeca",
+    "cintura",
+    "garganta",
 ]
 
 
@@ -165,9 +175,9 @@ class ClinicalAgent:
             llm_latency_ms=self.last_llm_latency_ms,
             decision_latency_ms=decision_latency_ms,
             safety_latency_ms=safety_latency_ms,
-            input_tokens=None,
-            output_tokens=None,
-            token_accounting="unavailable",
+            input_tokens=count_tokens(message),
+            output_tokens=count_tokens(final_response),
+            token_accounting="estimado (palabras, no tokenizer real)",
             llm_provider=self.last_llm_provider,
             llm_model=self.last_llm_model,
             llm_status=self.last_llm_status,
@@ -1154,7 +1164,15 @@ def extract_symptoms(text: str) -> list[str]:
 
 
 def extract_severity(text: str) -> str | None:
-    match = re.search(r"\b(bastante|much[ií]simo|intenso|severo|insoportable|alta)\b", text)
+    # Intensidad alta primero (mismo comportamiento que antes), y también
+    # intensidad baja/media -- antes solo se reconocía "duele mucho", nunca
+    # "duele poquito", así que ese caso dejaba `severity` vacío para
+    # siempre y el agente repetía la pregunta de intensidad sin avanzar.
+    match = re.search(
+        r"\b(bastante|much[ií]simo|intenso|severo|insoportable|alta|"
+        r"poquito|poco|leve|tolerable|soportable|moderado|nada)\b",
+        text,
+    )
     return match.group(1) if match else None
 
 

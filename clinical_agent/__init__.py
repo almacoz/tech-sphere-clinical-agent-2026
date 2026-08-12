@@ -1,2 +1,2 @@
-"""Spanish post-op follow-up agent for the Tech Sphere Challenge."""
+"""Spanish post-op follow-up clinical agent."""
 

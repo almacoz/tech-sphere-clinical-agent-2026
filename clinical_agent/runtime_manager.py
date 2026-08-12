@@ -210,6 +210,7 @@ class RuntimeManager:
                 stderr=subprocess.PIPE,
                 text=True,
                 check=False,
+                timeout=5,
             )
             if result.returncode != 0:
                 return set()

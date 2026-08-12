@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Tech Sphere Clinical Agent</title>
+    <title>Agente Clínico Postoperatorio</title>
     <style>
       :root {
         color-scheme: light;
@@ -211,12 +211,13 @@
     <main>
       <header style="display:flex;align-items:center;gap:12px;justify-content:space-between;">
         <div>
-          <h1 style="margin:0;">Tech Sphere Clinical Agent</h1>
+          <h1 style="margin:0;">Agente Clínico Postoperatorio</h1>
           <div style="font-size:13px;color:#64748b;margin-top:6px;">Consola interactiva · RAG · TTS local</div>
         </div>
-        <div style="text-align:right">
+        <div style="text-align:right" id="runtimeManager">
           <div id="runtimeStatusText" style="font-weight:700;color:#0f172a;">Comprobando entorno...</div>
           <div style="font-size:12px;color:#64748b;" id="runtimeMissingText"></div>
+          <button id="prepareRuntime" class="secondary" hidden style="margin-top:6px;">Preparar entorno</button>
         </div>
       </header>
 
@@ -259,6 +260,18 @@
               <div class="row" style="margin-bottom:8px;"><strong>Decisión</strong><span id="risk" class="pill">sin ejecutar</span><span id="human" class="pill">sin escalamiento</span></div>
               <div style="font-size:13px;color:#0f172a;min-height:36px;" id="answer"></div>
             </div>
+            <div style="margin-top:10px;padding:8px 10px;border-radius:8px;background:#f8fafc;border:1px solid #e6eef8;">
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <strong style="font-size:12px;color:#334155;">Contexto del turno</strong>
+                <span id="turnSourcePill" class="pill">sin ejecutar</span>
+              </div>
+              <div style="font-size:12px;color:#475569;margin-top:6px;line-height:1.7;">
+                <div>Tokens (aprox.): <span id="turnTokens">–</span></div>
+                <div>Latencia total: <span id="turnLatency">–</span></div>
+                <div>Desglose: <span id="turnLatencyBreakdown">–</span></div>
+                <div>Evidencia RAG: <span id="turnEvidence">–</span></div>
+              </div>
+            </div>
             <details style="margin-top:10px;">
               <summary style="cursor:pointer;">Detalles / JSON</summary>
               <pre id="details">{}</pre>
@@ -293,6 +306,11 @@
       const risk = document.querySelector("#risk");
       const human = document.querySelector("#human");
       const details = document.querySelector("#details");
+      const turnSourcePill = document.querySelector("#turnSourcePill");
+      const turnTokens = document.querySelector("#turnTokens");
+      const turnLatency = document.querySelector("#turnLatency");
+      const turnLatencyBreakdown = document.querySelector("#turnLatencyBreakdown");
+      const turnEvidence = document.querySelector("#turnEvidence");
       const fileInput = document.querySelector("#file");
       const uploadButton = document.querySelector("#upload");
       const refreshButton = document.querySelector("#refresh");
@@ -413,6 +431,42 @@
         } else if (value === "UNKNOWN") {
           risk.classList.add("risk-unknown");
         }
+      }
+
+      function renderTurnContext(metrics) {
+        if (!metrics) {
+          turnSourcePill.textContent = "sin ejecutar";
+          turnSourcePill.className = "pill";
+          turnTokens.textContent = "–";
+          turnLatency.textContent = "–";
+          turnLatencyBreakdown.textContent = "–";
+          turnEvidence.textContent = "–";
+          return;
+        }
+
+        turnSourcePill.className = "pill";
+        if (metrics.fallback_used) {
+          turnSourcePill.textContent = "Respuesta determinista (sin LLM)";
+          turnSourcePill.classList.add("risk-yellow");
+        } else if (metrics.llm_status === "ok") {
+          turnSourcePill.textContent = `LLM: ${metrics.llm_provider || "?"} / ${metrics.llm_model || "?"}`;
+          turnSourcePill.classList.add("risk-green");
+        } else {
+          turnSourcePill.textContent = `LLM: ${metrics.llm_status || "desconocido"}`;
+          turnSourcePill.classList.add("risk-red");
+        }
+
+        const inTok = metrics.input_tokens ?? "–";
+        const outTok = metrics.output_tokens ?? "–";
+        turnTokens.textContent = `${inTok} entrada / ${outTok} salida (${metrics.token_accounting || "sin dato"})`;
+
+        turnLatency.textContent = `${metrics.total_latency_ms ?? "–"} ms`;
+        turnLatencyBreakdown.textContent =
+          `RAG ${metrics.rag_latency_ms ?? 0} ms · LLM ${metrics.llm_latency_ms ?? 0} ms · ` +
+          `Decisión ${metrics.decision_latency_ms ?? 0} ms · Seguridad ${metrics.safety_latency_ms ?? 0} ms`;
+
+        const docCount = Array.isArray(metrics.retrieved_documents) ? metrics.retrieved_documents.length : 0;
+        turnEvidence.textContent = docCount > 0 ? `${docCount} documento(s) usados` : "sin evidencia recuperada";
       }
 
       async function readApiJson(response) {
@@ -674,9 +728,11 @@
             2,
           );
           renderAudit(body.audit);
+          renderTurnContext(body.metrics);
           playAgentAudio(body.audio_base64);
         } catch (error) {
           answer.textContent = error.message;
+          renderTurnContext(null);
         } finally {
           sendButton.disabled = false;
         }

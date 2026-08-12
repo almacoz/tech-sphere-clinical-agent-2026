@@ -1,6 +1,6 @@
-# Tech Sphere Clinical Agent 2026
+# Agente Clínico Postoperatorio 2026
 
-Agente conversacional postoperatorio educativo en español, desarrollado para el **Tech Sphere Challenge 2026**.
+Agente conversacional postoperatorio educativo en español.
 
 El sistema combina conversación por voz, extracción de información clínica, recuperación aumentada por conocimiento (RAG), reglas deterministas de seguridad y escalamiento, y trazabilidad completa de las decisiones.
 
@@ -29,7 +29,7 @@ Una decisión clínica **no depende exclusivamente del LLM**. El modelo se utili
 
 ## Arquitectura
 
-![Arquitectura y flujo de decisión del Tech Sphere Clinical Agent 2026](docs/architecture.png)
+![Arquitectura y flujo de decisión del agente clínico postoperatorio](docs/architecture.png)
 
 Versión en texto del mismo flujo, para lectura sin imágenes:
 
@@ -476,8 +476,8 @@ El script de instalación comprueba esta dependencia antes de continuar.
 ### Levantar el proyecto
 
 ```sh
-# 1. Entrar al proyecto
-cd tech-sphere-clinical-agent-2026
+# 1. Entrar al proyecto (nombre de la carpeta donde clonaste el repositorio)
+cd <carpeta-del-proyecto>
 
 # 2. Preparar dependencias, modelos y voz
 ./setup.sh

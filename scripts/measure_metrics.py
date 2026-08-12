@@ -1,5 +1,5 @@
 """
-Medicion de las metricas obligatorias de la rubrica Tech Sphere 2026 (SS5):
+Medicion de las metricas obligatorias de la rubrica de evaluacion (SS5):
 - Latencia P50 / P95 (fin del turno del paciente -> respuesta del agente)
 - Tokens de entrada/salida por turno (aproximado, ver nota mas abajo)
 - Invocaciones al modelo por turno
