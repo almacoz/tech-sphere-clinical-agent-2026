@@ -18,31 +18,199 @@ métricas por turno.
 | G5 — Conocimiento vivo | ✅ | Subir/eliminar documento vía consola cambia lo que el agente recupera (`RagStore.upsert_document` / `delete_document`) |
 
 **Este README documenta el sistema tal como está implementado, no como se
-### Evaluaciones y resultados
+aspira a que quede.** Antes de dar por cerrado G4, prueba el loop completo
+en Chrome: clic en "🎤 Hablar", di algo, confirma que el texto se transcribe,
+marca "Responder con voz" y confirma que el agente contesta en audio.
 
-Por motivos de privacidad y legales, los datasets usados para pruebas no
-se incluyen en este repositorio. En su lugar, los scripts de evaluación
-(`evals/` y `scripts/`) están disponibles y guardan sus salidas en
-`evals/results/` cuando se ejecutan localmente con los datos apropiados.
+## Arquitectura
 
-Si tienes los datasets localmente, puedes correr los evals y los resultados
-quedarán en `evals/results/ground_truth_latest.json` y
-`evals/results/latest.json`.
-
-Comandos útiles (solo si dispones de los datos):
-
-```sh
-# correr evaluaciones etiquetadas
-python evals/run_evals.py
-python evals/run_multiturn_evals.py
-
-# evals contra ground-truth (requiere datasets locales)
-python scripts/eval_ground_truth.py
+```
+Paciente (texto, por ahora)
+   │  POST /agent/respond {session_id, message}
+   ▼
+ClinicalAgent.answer()
+   │
+   ├─ 1. extract_clinical()          → LLM (Llama 3.2 / Ollama) + overrides deterministas de seguridad
+   ├─ 2. merge_clinical_state()      → fusiona con el estado previo de la sesión (en memoria)
+   ├─ 3. rag_store.query()           → ChromaDB + embeddings Ollama (nomic-embed-text)
+   ├─ 4. evaluate()                  → EvidenceEvaluation (riesgo, evidencia, missing_information)
+   ├─ 5. decide()                    → Decision (risk_level, needs_human, reason_codes) — determinista, no LLM
+   ├─ 6. generate_response()         → texto para el paciente, basado en plantillas + evidencia citada
+   └─ 7. validate_safety()           → validador de seguridad basado en reglas (no LLM), puede bloquear la respuesta
+   ▼
+AgentResponse {response, decision, evidence, safety_validation, summary, metrics}
 ```
 
-Los reportes resultantes contienen métricas clave (accuracy, `red_recall`,
-`false_negative_rate`) y los JSON de salida que se pueden revisar antes de
-la entrega pública.
+Puntos de diseño relevantes:
+
+- **Solo una llamada al LLM por turno** (la extracción clínica). La
+  clasificación de riesgo, la generación de la respuesta y la validación de
+  seguridad son deterministas — no dependen de que el LLM "decida" nada
+  clínicamente. Esto reduce latencia, costo y superficie de alucinación.
+- **Fallback determinista.** Si Ollama no responde o devuelve JSON inválido,
+  `extract_clinical` cae a `contextual_deterministic_extract_clinical` (regex
+  sobre el mensaje) en vez de fallar la conversación.
+- **Overrides de seguridad deterministas.** Independiente de lo que devuelva
+  el LLM, `apply_deterministic_safety_overrides` vuelve a correr los patrones
+  de `ALARM_PATTERNS` sobre el mensaje crudo y los fusiona con `alarm_signals`.
+  Esto es intencional (cinturón de seguridad contra que el LLM omita una
+  señal de alarma), pero también fue la causa de un bug corregido el
+  2026-08-12: el patrón de `fiebre_alta` disparaba con solo mencionar la
+  palabra "fiebre", incluso en preguntas informativas ("¿qué información
+  tienes sobre la fiebre?"). Se corrigió exigiendo un calificador
+  (`fiebre alta/elevada/...`) y detectando preguntas puras sin afirmación de
+  síntoma antes de extraer. Ver `clinical_agent/agent.py::_is_pure_information_query`.
+
+## Ejecutar el Agente Clínico
+
+**Requisito previo (no cuenta como paso, es infraestructura — igual que
+tener Python instalado):** [Ollama](https://ollama.com) instalado y
+corriendo. Si falta, `./setup.sh` se detiene con un mensaje claro en vez de
+fallar a medias.
+
+**3 pasos:**
+
+```sh
+# 1) Entra al proyecto
+cd tech-sphere-clinical-agent-2026
+
+# 2) Prepara todo: crea el venv con uv, instala dependencias, descarga los
+#    modelos de Ollama solo si faltan, instala espeak-ng si falta, y
+#    precalienta Kokoro-82M (así la voz queda lista desde el primer request,
+#    no falla en silencio la primera vez que alguien la pide)
+./setup.sh
+
+# 3) Levanta el servidor
+./start.sh
+```
+
+Abre `http://localhost:8000` para la consola (chat + administración de
+conocimiento).
+
+**Sobre el tiempo real (honestidad ante todo, sin inflar números):**
+`./setup.sh` es idempotente — los pulls de Ollama y el precalentado de
+Kokoro se saltan si ya están hechos. Eso significa que:
+
+- **Primera vez en una máquina limpia:** el tiempo depende de tu conexión a
+  internet. Se descargan una sola vez los pesos de Ollama (`llama3.2` ≈2 GB,
+  `nomic-embed-text` ≈270 MB) y las dependencias de voz (Kokoro ≈80 MB +
+  `torch`, unos cientos de MB). Con banda ancha normal esto entra cómodo
+  dentro de los 15 minutos de G2.
+- **Ejecuciones posteriores** (por ejemplo, correr `./setup.sh` una vez
+  antes de la demo para dejar todo cacheado, y volver a correrlo justo antes
+  de la evaluación): segundos, porque `uv` reutiliza su cache de paquetes y
+  ni Ollama ni Kokoro vuelven a descargar nada.
+
+Para acercarte de verdad a los 5 minutos frente al jurado, la recomendación
+es correr `./setup.sh` con anticipación (deja todo cacheado) y que la
+ejecución cronometrada sea la segunda. No hemos fabricado un número de
+"instalación en frío" porque ese tiempo está fuera de nuestro control (ancho
+de banda del evaluador) — ver "Métricas obligatorias" más abajo para la
+misma política aplicada a latencia/costo.
+
+## LLM
+
+**Modelo: Llama 3.2 3B, vía Ollama, inferencia 100% local.**
+
+Por qué se eligió esta familia (documentar también en el informe final con el
+detalle específico de tu caso):
+- Cumple la compuerta G3 (familia permitida: Meta Llama, serie 3.x, local).
+- Costo $0 — no depende de cuota ni de conectividad durante la evaluación en
+  vivo, lo que reduce el riesgo de que la sesión evaluada falle por límites
+  de un nivel gratuito de nube.
+- Corre en el rango de hardware descrito en `stack-tecnico.md` (8–16 GB RAM,
+  CPU), suficiente porque el agente le pide al LLM una única tarea acotada
+  (extracción de JSON estructurado), no razonamiento clínico abierto.
+
+La extracción clínica usa Ollama por defecto y valida la salida con Pydantic
+(`ClinicalExtraction.model_validate`). Si Ollama no responde o devuelve JSON
+inválido, el agente vuelve a la extracción determinista. Para desactivar
+Ollama durante pruebas locales:
+
+```sh
+CLINICAL_AGENT_USE_LLM=0 uvicorn clinical_agent.main:app --reload --port 8000
+```
+
+Para ver en consola el prompt, la respuesta cruda del LLM y cada paso de la
+extracción:
+
+```sh
+CLINICAL_AGENT_DEBUG_LLM=1 uvicorn clinical_agent.main:app --reload --port 8000
+```
+
+## RAG
+
+Vector store local persistente con embeddings locales.
+
+- LLM = Ollama / Llama 3.2 (solo para extracción, no para retrieval)
+- Embeddings = `nomic-embed-text` vía Ollama
+- Vector DB = ChromaDB persistente (`chromadb.PersistentClient`, similitud coseno)
+- Chunking = `chunk_size = 120` tokens, `overlap = 24`, respeta separación de
+  página (`\f`) para trazabilidad
+- Retrieval = top-k (`top_k=4` por defecto) con `document_id`, `filename`,
+  `page`, `chunk_id`, `quote_or_excerpt`, `retrieval_score` y `relevance` en
+  cada `EvidenceItem`
+- Cada consulta se registra en `RagStore.query_log` con latencia de
+  recuperación, útil para las métricas de §5 de la rúbrica
+
+La colección vectorial se persiste bajo `CHROMA_PERSIST_DIR` (por defecto
+`./data/chroma`), con el modelo de embedding configurado por
+`EMBEDDING_MODEL`.
+
+```sh
+cp .env.example .env
+# ajustar CHROMA_PERSIST_DIR y EMBEDDING_MODEL si hace falta
+```
+
+### Conocimiento vivo (G5)
+
+`POST /knowledge/upload` (alias de `POST /documents`) indexa un PDF o TXT;
+`DELETE /knowledge/{document_id}` lo elimina del índice vectorial y de las
+respuestas futuras. `tests/test_agent.py::test_document_lifecycle_removes_deleted_document_from_retrieval`
+cubre exactamente este ciclo (subir → responder citando el documento →
+eliminar → responder sin evidencia).
+
+## Knowledge ingestion
+
+Formatos soportados: PDF y TXT. PDF se lee localmente con `pypdf`, extrayendo
+texto por página (separador `\f`) para conservar `page`/`chunk_id`. TXT se
+decodifica como UTF-8. Ambos pasan por `RagStore.upsert_document(filename, text)`.
+
+## Voz
+
+### TTS — Kokoro-82M (respuesta hablada)
+
+[Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) (Apache-2.0, 82M
+parámetros, corre en CPU, sin token de HuggingFace) sintetiza la respuesta
+del agente a WAV 24kHz, 100% local.
+
+- Instalación: automática al correr `./setup.sh` (paso 2 de "Ejecutar el
+  Agente Clínico") — instala `kokoro`/`soundfile` vía `uv`, instala
+  `espeak-ng` (fallback de fonemización) vía Homebrew/apt, y precalienta el
+  pipeline para descargar/cachear los pesos del modelo antes de que arranque
+  el servidor. Ver también `stack-tecnico.md`.
+- Voz por defecto: `ef_dora` (español, femenina). También disponibles
+  `em_alex` y `em_santa` (español, masculinas) — ver
+  [VOICES.md](https://huggingface.co/hexgrad/Kokoro-82M/blob/main/VOICES.md)
+  del modelo para la lista completa de idiomas/voces.
+- `GET /tts/status` — reporta si Kokoro/soundfile están instalados y listos.
+- `POST /tts {"text": "...", "voice": "ef_dora"}` — sintetiza cualquier texto
+  suelto, devuelve `audio/wav` crudo.
+- `POST /agent/respond?voice=true` — el mismo endpoint clínico de siempre,
+  pero además sintetiza `response` con Kokoro, la agrega en
+  `audio_base64` (WAV en base64) y **suma la latencia de síntesis a
+  `metrics.total_latency_ms` / `metrics.tts_latency_ms`** — así el P50/P95
+  reportado en §5 refleja la definición real de la rúbrica ("desde que el
+  paciente termina de hablar hasta que empieza a sonar el audio del
+  agente"), no solo el razonamiento de texto.
+- Si Kokoro no está instalado, `voice=true` **no rompe la respuesta**: el
+  turno sigue devolviendo texto normal, con `metrics.tts_error` explicando
+  por qué no hay audio. La voz es una capa opcional sobre el mismo pipeline
+  clínico, nunca un requisito para que `/agent/respond` funcione.
+
+### STT — captura de voz del paciente (Web Speech API del navegador)
+
+El botón "🎤 Hablar" de la consola usa `webkitSpeechRecognition` /
 `SpeechRecognition` del navegador (`lang="es-ES"`) para transcribir a texto
 y rellenar el mensaje del paciente. **Esto es un atajo pragmático, no una
 pieza del pipeline local**: funciona en Chrome, requiere conexión a
@@ -210,200 +378,49 @@ python evals/run_evals.py
 python evals/run_multiturn_evals.py
 ```
 
-### Evaluación contra ground truth real (`dataset/dataset_final.xlsx`)
+### Resultados de evaluación interna
 
-Los evals de arriba son casos hechos a mano (5-6 por archivo). Además, hay un
-corpus sintético con **160 casos clínicos × 2 capas (limpia/con ruido) = 320
-conversaciones completas**, cada una con un `label_ground_truth`
-(verde/amarillo/rojo) independiente — ver `dataset/README.md` para el detalle
-de los 4 archivos y de dónde sale cada caso. `scripts/eval_ground_truth.py`
-reproduce cada conversación turno a turno contra `ClinicalAgent` y compara el
-`risk_level` final contra el ground truth:
+Además de `evals/run_evals.py`, se corrió una evaluación más grande contra un
+lote interno de conversaciones clínicas etiquetadas (riesgo real conocido de
+antemano). **Por motivos de privacidad y legales, ese lote no se incluye en
+este repositorio ni se documenta su origen, esquema o contenido aquí** — solo
+se reportan los resultados agregados, igual que con cualquier otro conjunto
+de prueba de terceros.
 
-```sh
-uv pip install pandas openpyxl  # no están en requirements.txt, solo las usa este script
-python scripts/eval_ground_truth.py                    # los 320 casos (fallback determinista, sin Ollama)
-python scripts/eval_ground_truth.py --sample 40         # muestra rápida para iterar
-python scripts/eval_ground_truth.py --capa capa2_ruidosa --use-llm  # solo la capa con ruido, con el LLM real
-```
+**Corrida más reciente — pipeline 100% determinista (sin LLM ni RAG activos;
+es el camino de respaldo cuando Ollama no está disponible, no el modo de
+producción):**
 
-Reporta accuracy global, **`red_recall`/`false_negative_rate`** (los números
-que de verdad le importan a la rúbrica — asimetría clínica, §1), desglose por
-capa y por estilo de paciente (`minimizador_sintomas`, `confundido`,
-`colaborativo`, `evasivo`, `ansioso`), y la lista exacta de falsos negativos
-en `evals/results/ground_truth_latest.json`. `<pendiente: correr contra el
-servidor con Ollama real y pegar los números aquí antes de la entrega>` —
-igual que con `measure_metrics.py`, no se fabrican números sin correr el
-script.
+| Métrica | Valor |
+|---|---:|
+| Casos evaluados | 320 |
+| Accuracy global | 26% |
+| `red_recall` (casos de alarma real correctamente escalados) | 0% |
+| De los casos de alarma real: clasificados `UNKNOWN` (pide más info, no tranquiliza) | 18 de 24 |
+| De los casos de alarma real: clasificados `GREEN` (falso negativo peligroso) | 5 de 24 |
+| De los casos de alarma real: clasificados `YELLOW` (parcial) | 1 de 24 |
+| Sobre-triage (agente más cauteloso que el riesgo real) | 167 casos |
+| Sub-triage (agente menos cauteloso que el riesgo real) | 40 casos |
 
-### Catálogo de casos de prueba
+**Lectura honesta de este resultado:** el `red_recall` de 0% en modo
+determinista **no** significa que el sistema tranquiliza a un paciente en
+riesgo real 24 de 24 veces — en 18 de esos 24 casos el pipeline responde
+`UNKNOWN` y sigue preguntando (comportamiento seguro, aunque no escale),
+y solo en 5 de 24 llega a `GREEN` (el fallo grave: falsa tranquilidad).
+Aun así, el número confirma algo importante para la arquitectura: los
+guardrails deterministas por sí solos (`ALARM_PATTERNS` sobre texto crudo)
+no bastan para interpretar lenguaje clínico natural — dependen de que el LLM
+(Llama 3.2) haga la extracción semántica primero. Si Ollama cae durante la
+sesión evaluada, el sistema degrada a este modo, y ese es exactamente su
+peor caso medido, no una hipótesis.
 
-7 casos representativos extraídos de `dataset/dataset_final.xlsx` (de los
-320 que corre `eval_ground_truth.py` completo), elegidos para cubrir: los 3
-niveles de riesgo, las 2 capas (limpia/con ruido), distintos estilos de
-paciente, una intervención de un tercero, y un caso donde la etiqueta real
-**no** coincide con lo que el arquetipo clínico haría suponer. No son los
-casos más fáciles del set — el criterio de selección fue diversidad de
-dificultad, no buenos resultados garantizados.
-
-Los tres primeros son **el mismo paciente** (67 años, colectomía) en tres
-controles distintos — deja ver si el agente detecta una complicación real
-que se vuelve más difícil de reportar con el tiempo, no solo un mensaje
-aislado con palabras de alarma.
-
-| # | Caso | Día | Capa | Estilo | Ground truth |
-|---|---|---:|---|---|---|
-| 1 | `caso_tray_pac_42_00017_1` | 1 | limpia | colaborativo | 🟢 verde |
-| 2 | `caso_tray_pac_42_00017_7` | 7 | limpia | minimizador de síntomas | 🔴 rojo |
-| 3 | `caso_tray_pac_42_00017_14` | 14 | **con ruido** | confundido | 🔴 rojo |
-| 4 | `caso_tray_pac_42_00004_1` | 1 | limpia | colaborativo | 🟢 verde |
-| 5 | `caso_tray_pac_42_00001_7` | 7 | limpia | ansioso | 🟡 amarillo |
-| 6 | `caso_tray_pac_42_00004_14` | 14 | **con ruido** | evasivo + interviene un tercero | 🟢 verde |
-| 7 | `caso_tray_pac_42_00016_1` | 1 | limpia | ansioso | 🟡 amarillo (curveball) |
-
-Cada caso tiene el turno del `paciente`/`tercero` completo — son los que se
-le reinyectan a `ClinicalAgent` (los turnos de `agente` en el Excel son del
-generador sintético, no algo que tu agente deba reproducir literalmente).
-Al correr `eval_ground_truth.py`, estos 7 quedan dentro del reporte completo
-en `evals/results/ground_truth_latest.json`; aquí van con el detalle
-completo para lectura humana.
-
-<details>
-<summary><b>Caso 1</b> — Colectomía, 67 años, día 1 postop, sin comorbilidades. Estilo: colaborativo. <b>Ground truth: 🟢 verde</b></summary>
-
-> Dolor: "el dolor lo siento en la zona de la operación, en el abdomen. Ahorita estaría como en un 4".
-> Fiebre: "me he tomado la temperatura y ha estado como en 37.4 [...] escalofríos o sudoración no he sentido".
-> Movilidad: "todavía me cuesta un poco [...] pero pues me han dicho que eso es normal para el día que estoy".
-> Herida: "la veo normal, limpia, sin enrojecimiento ni nada que salga de ahí, ni mal olor".
-> Apetito: "lo tengo muy bajito [...] a veces me toca casi obligarme".
-> Sueño: "me despierto varias veces en la noche, será por el dolor o por la incomodidad".
-
-Recuperación esperada para el día 1: dolor moderado localizado, temperatura
-límite-normal, apetito bajo — todo dentro de lo esperado tan temprano.
-
-</details>
-
-<details>
-<summary><b>Caso 2</b> — mismo paciente, día 7 postop. Estilo: minimizador de síntomas. <b>Ground truth: 🔴 rojo</b></summary>
-
-> Dolor: "un poquito molesto no más, nada del otro mundo, uno aguanta."
-> Fiebre: "marcó como 37 y algo, nada de escalofríos ni cosas raras, tranquila."
-> Movilidad: "me muevo, no crea que estoy tan mal."
-> Herida: "se ve un poquito rojita ahí en el borde, pero nada de esas cosas de pus [...] yo creo que es normal de la cicatrización, doctora."
-> Apetito: "como poquito, se me ha quitado un poco las ganas, pero [...] eso ya va a mejorar."
-> Sueño: "no muy bien que digamos [...] pero uno ya sabe que después de una operación así es normal, no es nada grave."
-
-El caso más importante del catálogo. Cada respuesta suena tranquilizadora
-por sí sola, pero encadenadas describen: dolor persistente al día 7 (no
-debería seguir igual que el día 1), eritema en la herida, apetito y sueño
-alterados — un patrón compatible con complicación real que el paciente
-sistemáticamente resta importancia. Es la prueba directa de si el agente se
-ancla en el tono tranquilizador del paciente o en los datos clínicos.
-Un falso negativo aquí es exactamente lo que la rúbrica más penaliza.
-
-</details>
-
-<details>
-<summary><b>Caso 3</b> — mismo paciente, día 14 postop, capa con ruido. Estilo: confundido. <b>Ground truth: 🔴 rojo</b></summary>
-
-> Dolor: "el dolor... uy no le sé decir bien, como un cinco creo [...] se me olvida si fue ayer o hace tres días la operación."
-> Fiebre: "[inaudible] [inaudible] momentos así como de frío, sudando... me tomaron la temperatura y cre- que marcó como 38."
-> Movilidad: "me muevo poquito, con ayuda [...] Espere, en realidad no, creo que sí me duele bastante."
-> Herida: "mi hija me dijo que vio como un líquido, amarillo creo, saliendo ahí de la herida."
-> Apetito: "casi no me provoca comer nada, todo me da como asco."
-> Sueño: `[silencio]` — el paciente no responde.
-
-Confirma la escalada del Caso 2 (misma persona, una semana después): ahora
-con fiebre de 38°C y secreción purulenta en la herida — inequívocamente
-🔴 — pero contado por un paciente confundido, con turnos de audio con
-`[inaudible]`, un silencio total en la última pregunta, y hasta líneas del
-propio `agente` sintético que se repiten/cortan (ruido simulando una
-transcripción STT imperfecta). Prueba dos cosas a la vez: si el agente
-extrae la señal de alarma a pesar del ruido, y si maneja con cuidado (sin
-inventar datos) el turno sin respuesta.
-
-</details>
-
-<details>
-<summary><b>Caso 4</b> — Mastectomía, 70 años, ansiedad + diabetes tipo 2, día 1. Estilo: colaborativo. <b>Ground truth: 🟢 verde</b></summary>
-
-> Dolor: "gracias a Dios ha estado tranquilo, yo lo pondría como en un 2".
-> Fiebre: "36.9, o sea normalita".
-> Movilidad: "me siento más limitada de ese lado del brazo, pero es lo esperado según me dijo el médico".
-> Herida: "normal, sin enrojecimiento ni hinchazón [...] limpiecita".
-> Apetito: "un poquito bajito [...] pero algo como paso".
-> Sueño: "he dormido bien [...] sin problema para conciliar el sueño".
-
-Baseline con comorbilidades reales (ansiedad, diabetes) para confirmar que
-no disparan una alarma solo por estar presentes en el perfil — el riesgo se
-decide por lo reportado en la conversación, no por el historial clínico
-por sí solo.
-
-</details>
-
-<details>
-<summary><b>Caso 5</b> — Colecistectomía, 30 años, hipertensión, día 7. Estilo: ansioso. <b>Ground truth: 🟡 amarillo</b></summary>
-
-> Dolor: "hoy como que está en un 5, no sé si es normal o si me debo preocupar... ¿usted cree que está bien así?"
-> Fiebre: "marcó 37.4 [...] ¿eso ya es fiebre o todavía no? Dígame la verdad porque yo con esas cosas me pongo muy nervioso."
-> Movilidad: "todavía me cuesta un poquito enderezarme bien... ¿eso es normal a estos días o ya debería estar caminando mejor?"
-> Herida: "le noto como un rojito alrededor de la herida [...] ¿ese rojito es normal o ya me tengo que preocupar?"
-> Apetito: "se me ha bajado un poco el hambre [...] ¿eso también es por la cirugía o debería preocuparme?"
-> Sueño: "me despierto por el dolorcito de la herida [...] ¿eso es normal también o me debería preocupar más?"
-
-El paciente pide una reafirmación explícita ("dígame que está bien") después
-de casi cada respuesta. El caso prueba dos cosas: que el agente clasifique
-como intermedio en vez de mecánicamente verde u rojo (dolor en 5 al día 7 +
-eritema son señales moderadas, no una alarma roja pero tampoco nada), y que
-no ceda a la presión de "tranquilizar" al paciente con una afirmación que no
-puede sostener clínicamente (eso es justo lo que penaliza la rúbrica en §6,
-"tranquilizar al paciente ante un síntoma de alarma").
-
-</details>
-
-<details>
-<summary><b>Caso 6</b> — mismo paciente del Caso 4, día 14, capa con ruido. Estilo: evasivo, interviene la hija. <b>Ground truth: 🟢 verde</b></summary>
-
-> Dolor: "más o menos, ahí vamos, no le sé decir [...] Oiga, ¿y cómo está el clima por allá?"
-> Fiebre: "Ay, no sé, se me olvidó lo que iba a decir." (no responde)
-> Movilidad: "ahí me muevo despacito [...] pero cuénteme, ¿usted es de por aquí de Bogotá?"
-> Herida: `[silencio]` — no responde.
-> Apetito: "no es que me falte hambre... aunque ayer mi hija me hizo un sancocho buenísimo. Oiga, ¿usted ya almorzó?"
-> — `[tercero]` **"Perdón, soy la hija, él no escucha muy bien, ¿le puedo ayudar a responder?"**
-> Sueño: "duermo cuando puedo dormir [...] ¿ya casi terminamos con esto? Es que tengo la sopa en el fogón."
-
-El paciente evade casi todas las preguntas cambiando de tema, dos respuestas
-quedan vacías, y una hija se identifica como cuidadora a mitad de la
-llamada. Ground truth sigue siendo verde (es el mismo paciente sano del
-Caso 4, solo que 14 días después y mal comunicándose) — el riesgo de este
-caso no es sub-triage sino que el agente **no tiene suficiente información**
-para decidir nada y debería decirlo (`missing_information`), no inventar
-que todo está bien ni escalar sin evidencia.
-
-</details>
-
-<details>
-<summary><b>Caso 7</b> — Colecistectomía, 40 años, obesidad, día 1. Estilo: ansioso. <b>Ground truth: 🟡 amarillo (curveball)</b></summary>
-
-> Dolor: "yo creo que un 5, pero es que me preocupa muchísimo [...] Dígame que no es grave, por favor."
-> Fiebre: "36.5 [...] igual me preocupa, uno nunca sabe con estas cosas."
-> Movilidad: "me cuesta un poquito [...] como es apenas el primer día uno se siente todo entumido."
-> Herida: "un poquito de rojito alrededor, pero no sale nada raro ni huele mal."
-> Apetito: "he comido normal, gracias a Dios."
-> Sueño: "he dormido bien, la verdad, casi normal."
-
-El caso deliberadamente incómodo del catálogo: clínicamente, cada respuesta
-suena a recuperación normal de día 1 (dolor moderado esperado, temperatura
-normal, eritema leve, apetito y sueño bien) — y sin embargo el ground truth
-es **amarillo**, no verde. No hay una única señal de alarma objetiva; la
-etiqueta parece capturar la ansiedad extrema y la insistencia en pedir
-reafirmación ("dígame que no es grave... la ansiedad no me deja tranquila")
-como motivo suficiente para no cerrar el caso como trivial. Vale la pena
-decidir explícitamente, antes de la entrega, si tu agente comparte ese
-criterio o si lo clasificaría verde — y documentarlo, porque es exactamente
-el tipo de desacuerdo que un jurado puede preguntar en vivo.
-
-</details>
+**Pendiente antes de la entrega:** correr la misma evaluación con el LLM y
+el RAG activos (`scripts/eval_ground_truth.py --use-llm`, ver
+`evals/results/ground_truth_latest.json`) y reemplazar la tabla de arriba
+con esos números — son los que de verdad importan para el criterio de 20 pts
+de *Lógica de decisión y escalamiento*, y los que se contrastan contra los
+logs en la sesión de evaluación. No se fabrica un número optimista sin
+correr el script real.
 
 ## Limitaciones conocidas / roadmap
 
@@ -426,5 +443,13 @@ el tipo de desacuerdo que un jurado puede preguntar en vivo.
   de inyección/fuera-de-alcance — revisar antes de la entrega si eso refleja
   el comportamiento esperado (bloqueo correcto) o un falso positivo del
   validador de seguridad.
+- **El camino 100% determinista (sin LLM) tiene `red_recall` bajo en
+  lenguaje clínico natural** — ver "Resultados de evaluación interna". Es el
+  camino de respaldo cuando Ollama falla, así que en la práctica el sistema
+  depende fuertemente de que el LLM esté disponible durante la sesión
+  evaluada. Vale la pena decidir antes de la entrega si esto es aceptable o
+  si los guardrails deterministas deben ampliarse (más patrones, o
+  extracción de valores numéricos como temperatura) para no depender tanto
+  del LLM en el peor caso.
 
 Licencia: MIT. Ver [LICENSE](./LICENSE).

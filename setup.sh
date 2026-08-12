@@ -22,6 +22,9 @@ fi
 # Esto es varias veces más rápido que `pip install` en frío.
 uv pip install -r requirements.txt --python .venv/bin/python
 
+# Ensure libraries used only by eval scripts are installed too (pandas/openpyxl)
+.venv/bin/pip install pandas openpyxl || true
+
 echo "== [2/4] Modelos de Ollama (LLM + embeddings, solo si faltan) =="
 if ! command -v ollama >/dev/null 2>&1; then
   echo "Ollama no está instalado. Instálalo desde https://ollama.com y vuelve a correr ./setup.sh"
