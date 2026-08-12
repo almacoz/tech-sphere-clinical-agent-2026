@@ -6,3 +6,54 @@ data/chroma/
 .env
 .env.local
 
+# Ignore persistent data, embeddings, and local vector DBs (do NOT commit datasets)
+data/
+# If you keep tiny sample docs for demos, add an allow-rule instead, e.g.:
+# !data/sample_docs/
+
+# Python / virtualenv
+.venv/
+venv/
+ENV/
+
+# Caches, logs and editor directories
+__pycache__/
+.pytest_cache/
+.DS_Store
+*.log
+logs/
+.vscode/
+.idea/
+
+# Large model weights and checkpoints
+models/
+weights/
+*.pt
+*.bin
+*.ckpt
+*.safetensors
+
+# Ollama / local model tooling caches
+.ollama/
+~/.ollama/
+
+# TTS / audio artifacts
+*.wav
+*.mp3
+audio/
+
+# Database files
+*.sqlite3
+*.db
+
+# Secrets and env files
+.env*
+secrets.json
+credentials.json
+*.key
+*.pem
+
+# Build/dist
+dist/
+build/
+

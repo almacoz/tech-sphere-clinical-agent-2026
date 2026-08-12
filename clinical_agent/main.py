@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import io
 import os
 from pathlib import Path
@@ -7,14 +8,21 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pypdf import PdfReader
 
+from . import tts as tts_module
 from .agent import ClinicalAgent
 from .rag import RagStore
 from .runtime_manager import RuntimeManager
-from .schemas import AgentRequest, AgentResponse, DocumentRecord, SessionResetRequest
+from .schemas import (
+    AgentRequest,
+    AgentResponse,
+    DocumentRecord,
+    SessionResetRequest,
+    TtsRequest,
+)
 
 SUPPORTED_REQUEST_SUFFIXES = {".txt", ".pdf"}
 
@@ -77,6 +85,15 @@ def extract_document_text(filename: str, content: bytes) -> str:
 @app.get("/", include_in_schema=False)
 def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon() -> Response:
+    ico = STATIC_DIR / "favicon.ico"
+    if ico.exists():
+        return FileResponse(ico)
+    # Return 204 No Content instead of 404 so browsers don't log a missing asset
+    return Response(status_code=204)
 
 
 @app.get("/health")
@@ -149,11 +166,67 @@ def runtime_pull_status() -> dict[str, Any]:
 
 
 @app.post("/agent/respond", response_model=AgentResponse)
-def respond(request: AgentRequest) -> AgentResponse:
+def respond(request: AgentRequest, voice: bool = False) -> AgentResponse:
     session_id = request.session_id.strip() if request.session_id else str(uuid4())
-    return agent.answer(session_id=session_id, message=request.message)
+    result = agent.answer(session_id=session_id, message=request.message)
+    if voice:
+        # Sintetiza la respuesta con Kokoro-82M y la suma a la latencia
+        # total del turno, para que P50/P95 reflejen de verdad "desde que el
+        # paciente termina de hablar hasta que empieza a sonar el audio del
+        # agente" (definición exacta de la métrica de la rúbrica §5). Si
+        # Kokoro no está instalado, el turno sigue respondiendo en texto:
+        # la voz es una capa opcional sobre el mismo pipeline clínico, no
+        # un requisito para que /agent/respond funcione.
+        try:
+            audio_bytes, tts_latency_ms = tts_module.synthesize(result.response)
+            result.audio_base64 = base64.b64encode(audio_bytes).decode("ascii")
+            result.metrics["tts_latency_ms"] = tts_latency_ms
+            result.metrics["total_latency_ms"] = (
+                result.metrics.get("total_latency_ms", 0) + tts_latency_ms
+            )
+        except (RuntimeError, ValueError) as error:
+            result.metrics["tts_latency_ms"] = 0
+            result.metrics.setdefault("tts_error", str(error))
+    return result
+
+
+@app.get("/tts/status")
+def tts_status() -> dict[str, Any]:
+    return tts_module.tts_status()
+
+
+@app.post("/tts")
+def synthesize_speech(request: TtsRequest) -> Response:
+    if not request.text.strip():
+        raise HTTPException(status_code=400, detail="text vacío")
+    try:
+        audio_bytes, latency_ms = tts_module.synthesize(
+            request.text,
+            voice=request.voice or tts_module.DEFAULT_VOICE,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    return Response(
+        content=audio_bytes,
+        media_type="audio/wav",
+        headers={"X-TTS-Latency-Ms": str(latency_ms)},
+    )
 
 
 @app.post("/session/reset")
 def reset_session(request: SessionResetRequest) -> dict[str, bool]:
     return {"deleted": agent.session_store.delete(request.session_id)}
+
+
+@app.get("/audit/{session_id}")
+def get_audit_trail(session_id: str) -> dict[str, Any]:
+    """Ventana de auditoria: devuelve, para una sesion, la traza completa de
+    cada turno (guardrails evaluados, handrail del LLM, rama de riesgo que
+    disparo y verificaciones de seguridad), para poder ver en que momento y
+    por que se tomo cada decision sin depender de leer logs de consola."""
+    session = agent.session_store.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"session_id": session_id, "turns": session.audit_log}

@@ -154,57 +154,134 @@
           grid-template-columns: 1fr;
         }
       }
+
+      .audit-step {
+        border: 1px solid #d9dee7;
+        border-left-width: 4px;
+        border-radius: 6px;
+        padding: 8px 10px;
+        margin: 6px 0;
+        font-size: 13px;
+        background: #fff;
+      }
+
+      .audit-step.triggered.guardrail {
+        border-left-color: #c0372b;
+        background: #fef2f1;
+      }
+
+      .audit-step.triggered.handrail {
+        border-left-color: #1f6feb;
+        background: #eef4ff;
+      }
+
+      .audit-step:not(.triggered) {
+        border-left-color: #94a3b8;
+        opacity: 0.75;
+      }
+
+      .audit-step .audit-head {
+        display: flex;
+        gap: 8px;
+        align-items: baseline;
+        flex-wrap: wrap;
+        font-weight: 700;
+      }
+
+      .audit-step .audit-badge {
+        font-size: 11px;
+        padding: 1px 6px;
+        border-radius: 999px;
+        background: #eef2f7;
+        font-weight: 700;
+        text-transform: uppercase;
+      }
+
+      .audit-step .audit-reason {
+        margin: 4px 0 0;
+        color: #334155;
+      }
+
+      #auditToggleAll {
+        margin: 6px 0;
+      }
     </style>
   </head>
   <body>
     <main>
-      <h1>Tech Sphere Clinical Agent</h1>
-
-      <section>
-        <div id="runtimeManager">
-          <h2>IA LOCAL</h2>
-          <div id="runtimeStatusText">Comprobando entorno...</div>
-          <div id="runtimeMissingText"></div>
-          <div id="runtimeActionRow" class="row">
-            <button id="prepareRuntime" class="secondary" hidden>Preparar IA local</button>
-          </div>
+      <header style="display:flex;align-items:center;gap:12px;justify-content:space-between;">
+        <div>
+          <h1 style="margin:0;">Tech Sphere Clinical Agent</h1>
+          <div style="font-size:13px;color:#64748b;margin-top:6px;">Consola interactiva · RAG · TTS local</div>
         </div>
-      </section>
-
-      <section>
-        <label for="session">Session ID</label>
-        <input id="session" type="text" />
-        <div class="row">
-          <button id="newConversation" class="secondary">Nueva conversación</button>
+        <div style="text-align:right">
+          <div id="runtimeStatusText" style="font-weight:700;color:#0f172a;">Comprobando entorno...</div>
+          <div style="font-size:12px;color:#64748b;" id="runtimeMissingText"></div>
         </div>
-      </section>
+      </header>
 
-      <div class="grid">
-        <section>
-          <label for="message">Mensaje del paciente</label>
-          <textarea id="message">Tengo fiebre alta después de la cirugía.</textarea>
-          <button id="send">Enviar</button>
-        </section>
-
-        <section>
+      <section style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;">
+        <div style="flex:1;min-width:280px;">
+          <label for="session">Session ID</label>
           <div class="row">
-            <strong>Decisión</strong>
-            <span id="risk" class="pill">sin ejecutar</span>
-            <span id="human" class="pill">sin escalamiento</span>
+            <input id="session" type="text" placeholder="ID de sesión (auto)" />
+            <button id="newConversation" class="secondary">Nueva conversación</button>
           </div>
-          <p id="answer"></p>
-          <pre id="details">{}</pre>
-        </section>
-      </div>
 
-      <section>
-        <div class="row">
-          <input id="file" type="file" accept=".pdf,.txt,text/plain,application/pdf" />
-          <button id="upload" class="secondary">Subir conocimiento</button>
-          <button id="refresh" class="secondary">Actualizar lista</button>
+          <div style="margin-top:12px;">
+            <label for="message">Mensaje del paciente</label>
+            <textarea id="message">Tengo fiebre alta después de la cirugía.</textarea>
+            <div class="row" style="margin-top:8px;">
+              <button id="send">Enviar</button>
+              <label style="display:inline-flex;align-items:center;gap:6px;margin-left:8px;">
+                <input id="voiceReplyToggle" type="checkbox" /> Responder con voz
+              </label>
+              <button id="micButton" class="secondary" type="button">🎤 Hablar</button>
+            </div>
+          </div>
+
+          <div style="margin-top:12px;">
+            <input id="file" type="file" accept=".pdf,.txt,text/plain,application/pdf" />
+            <button id="upload" class="secondary">Subir conocimiento</button>
+            <button id="refresh" class="secondary">Actualizar lista</button>
+            <div style="font-size:12px;color:#64748b;margin-top:6px;">Formatos: PDF, TXT · Arrastra o usa el selector</div>
+            <ul id="docs" style="margin-top:8px;"></ul>
+          </div>
         </div>
-        <div>Formatos soportados: PDF, TXT</div>
-        <ul id="docs"></ul>
+
+        <aside style="width:360px;min-width:260px;">
+          <div style="padding:12px;border-radius:10px;background:#fff;border:1px solid #e6eef8;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <strong>Estado</strong>
+              <span id="ttsStatusPill" class="pill">comprobando...</span>
+            </div>
+            <div style="margin-top:10px;">
+              <div class="row" style="margin-bottom:8px;"><strong>Decisión</strong><span id="risk" class="pill">sin ejecutar</span><span id="human" class="pill">sin escalamiento</span></div>
+              <div style="font-size:13px;color:#0f172a;min-height:36px;" id="answer"></div>
+            </div>
+            <details style="margin-top:10px;">
+              <summary style="cursor:pointer;">Detalles / JSON</summary>
+              <pre id="details">{}</pre>
+            </details>
+            <audio id="agentAudio" controls style="width:100%;margin-top:8px;display:none;"></audio>
+          </div>
+        </aside>
+      </section>
+
+      <section style="margin-top:18px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
+          <strong>Ventana de auditoría</strong>
+          <div class="row">
+            <span class="pill" id="auditTurnLabel">sin turno</span>
+            <button id="auditToggleAll" class="secondary">Mostrar todos</button>
+            <button id="auditLoadHistory" class="secondary">Cargar histórico</button>
+          </div>
+        </div>
+        <div id="auditTimeline" style="margin-top:12px;"></div>
+        <div id="auditHistoryWrap" hidden style="margin-top:12px;">
+          <strong>Histórico de esta sesión (últimos turnos)</strong>
+          <pre id="auditHistory">{}</pre>
+        </div>
       </section>
     </main>
 
@@ -221,6 +298,20 @@
       const refreshButton = document.querySelector("#refresh");
       const newConversationButton = document.querySelector("#newConversation");
       const docs = document.querySelector("#docs");
+      const auditTimeline = document.querySelector("#auditTimeline");
+      const auditTurnLabel = document.querySelector("#auditTurnLabel");
+      const auditToggleAllButton = document.querySelector("#auditToggleAll");
+      const auditLoadHistoryButton = document.querySelector("#auditLoadHistory");
+      const auditHistoryWrap = document.querySelector("#auditHistoryWrap");
+      const auditHistory = document.querySelector("#auditHistory");
+      let auditShowAll = false;
+      let lastAudit = null;
+      const ttsStatusPill = document.querySelector("#ttsStatusPill");
+      const voiceReplyToggle = document.querySelector("#voiceReplyToggle");
+      const micButton = document.querySelector("#micButton");
+      const agentAudio = document.querySelector("#agentAudio");
+      let speechRecognizer = null;
+      let isListening = false;
       const runtimeManager = document.querySelector("#runtimeManager");
       const runtimeStatusText = document.querySelector("#runtimeStatusText");
       const runtimeMissingText = document.querySelector("#runtimeMissingText");
@@ -241,6 +332,72 @@
         risk.className = "pill";
         human.textContent = "sin escalamiento";
         details.textContent = "{}";
+        lastAudit = null;
+        auditTimeline.innerHTML = "";
+        auditTurnLabel.textContent = "sin turno";
+        auditHistoryWrap.hidden = true;
+        auditHistory.textContent = "{}";
+      }
+
+      function escapeHtml(value) {
+        return String(value ?? "").replace(/[&<>"']/g, (char) => (
+          { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]
+        ));
+      }
+
+      function renderAudit(audit) {
+        lastAudit = audit;
+        if (!audit) {
+          auditTimeline.innerHTML = "";
+          auditTurnLabel.textContent = "sin turno";
+          return;
+        }
+        auditTurnLabel.textContent =
+          `turno ${audit.turn_count} · ${audit.final_risk_level} · ${audit.final_reason}`;
+        const steps = auditShowAll
+          ? audit.steps
+          : audit.steps.filter((step) => step.triggered);
+        if (!steps.length) {
+          auditTimeline.innerHTML =
+            "<p>Ningún guardrail se activó en este turno. Usa \"Mostrar todos los guardrails evaluados\" para ver también los que se evaluaron y no dispararon.</p>";
+          return;
+        }
+        auditTimeline.innerHTML = steps
+          .map((step) => {
+            const cls = `audit-step ${step.triggered ? "triggered" : ""} ${step.kind}`;
+            return `
+              <div class="${cls}">
+                <div class="audit-head">
+                  <span class="audit-badge">${escapeHtml(step.kind)}</span>
+                  <span>${escapeHtml(step.stage)}</span>
+                  <span>·</span>
+                  <span>${escapeHtml(step.rule_id || "")}</span>
+                  <span>·</span>
+                  <span>${step.triggered ? "activado" : "no activado"}</span>
+                </div>
+                <p class="audit-reason">${escapeHtml(step.reason)}</p>
+              </div>
+            `;
+          })
+          .join("");
+      }
+
+      async function loadAuditHistory() {
+        const sessionId = sessionInput.value;
+        if (!sessionId) return;
+        try {
+          const response = await fetch(`/audit/${sessionId}`);
+          const body = await readApiJson(response);
+          if (!response.ok) {
+            const detail = body && (body.detail || body.message);
+            throw new Error(detail || response.statusText || "Error cargando auditoría");
+          }
+          auditHistoryWrap.hidden = false;
+          auditHistory.textContent = JSON.stringify(body, null, 2);
+        } catch (error) {
+          auditHistoryWrap.hidden = false;
+          auditHistory.textContent = error.message;
+        }
       }
 
       function paintRiskLevel(level) {
@@ -411,11 +568,86 @@
         }
       }
 
+      async function loadTtsStatus() {
+        try {
+          const response = await fetch("/tts/status");
+          const status = await readApiJson(response);
+          if (!response.ok) throw new Error("No se pudo consultar /tts/status");
+          ttsStatusPill.textContent = status.ready
+            ? `Kokoro listo (${status.default_voice})`
+            : "Kokoro no instalado";
+          ttsStatusPill.className = "pill " + (status.ready ? "risk-green" : "risk-unknown");
+          if (!status.ready) {
+            voiceReplyToggle.checked = false;
+            voiceReplyToggle.disabled = true;
+          }
+        } catch (error) {
+          ttsStatusPill.textContent = "TTS no disponible";
+          ttsStatusPill.className = "pill risk-unknown";
+          voiceReplyToggle.disabled = true;
+        }
+      }
+
+      function playAgentAudio(audioBase64) {
+        if (!audioBase64) {
+          agentAudio.style.display = "none";
+          return;
+        }
+        agentAudio.src = `data:audio/wav;base64,${audioBase64}`;
+        agentAudio.style.display = "block";
+        agentAudio.play().catch(() => {
+          // Autoplay puede estar bloqueado por el navegador; el paciente
+          // igual puede darle play manualmente con los controles visibles.
+        });
+      }
+
+      function setupSpeechRecognition() {
+        const RecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!RecognitionCtor) {
+          micButton.disabled = true;
+          micButton.title = "Este navegador no soporta reconocimiento de voz (usa Chrome).";
+          return null;
+        }
+        const recognizer = new RecognitionCtor();
+        recognizer.lang = "es-ES";
+        recognizer.interimResults = false;
+        recognizer.maxAlternatives = 1;
+        recognizer.onresult = (event) => {
+          const transcript = event.results[0][0].transcript;
+          messageInput.value = transcript;
+        };
+        recognizer.onerror = () => {
+          isListening = false;
+          micButton.textContent = "🎤 Hablar";
+        };
+        recognizer.onend = () => {
+          isListening = false;
+          micButton.textContent = "🎤 Hablar";
+        };
+        return recognizer;
+      }
+
+      function toggleListening() {
+        if (!speechRecognizer) {
+          speechRecognizer = setupSpeechRecognition();
+        }
+        if (!speechRecognizer) return;
+        if (isListening) {
+          speechRecognizer.stop();
+          return;
+        }
+        isListening = true;
+        micButton.textContent = "⏹ Escuchando...";
+        speechRecognizer.start();
+      }
+
       async function respond() {
         sendButton.disabled = true;
         answer.textContent = "Procesando...";
+        agentAudio.style.display = "none";
         try {
-          const response = await fetch("/agent/respond", {
+          const voiceParam = voiceReplyToggle.checked ? "?voice=true" : "";
+          const response = await fetch(`/agent/respond${voiceParam}`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -441,6 +673,8 @@
             null,
             2,
           );
+          renderAudit(body.audit);
+          playAgentAudio(body.audio_base64);
         } catch (error) {
           answer.textContent = error.message;
         } finally {
@@ -499,8 +733,18 @@
       uploadButton.addEventListener("click", uploadDocument);
       refreshButton.addEventListener("click", loadDocuments);
       newConversationButton.addEventListener("click", startNewConversation);
+      auditToggleAllButton.addEventListener("click", () => {
+        auditShowAll = !auditShowAll;
+        auditToggleAllButton.textContent = auditShowAll
+          ? "Mostrar solo guardrails activados"
+          : "Mostrar todos los guardrails evaluados";
+        renderAudit(lastAudit);
+      });
+      auditLoadHistoryButton.addEventListener("click", loadAuditHistory);
+      micButton.addEventListener("click", toggleListening);
       loadRuntimeStatus();
       loadDocuments();
+      loadTtsStatus();
     </script>
   </body>
 </html>
