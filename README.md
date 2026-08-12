@@ -1,432 +1,702 @@
 # Tech Sphere Clinical Agent 2026
 
-Agente postoperatorio educativo en español para el Tech Sphere Challenge 2026.
-Incluye un servicio FastAPI con RAG sobre ChromaDB, extracción clínica asistida
-por LLM con overrides deterministas, decisión de riesgo separada de la
-generación de lenguaje, validador de seguridad, trazabilidad de fuentes y
-métricas por turno.
+Agente conversacional postoperatorio educativo en español, desarrollado para el **Tech Sphere Challenge 2026**.
 
-> Proyecto simulado y educativo. No debe utilizarse para atención médica real.
+El sistema combina conversación por voz, extracción de información clínica, recuperación aumentada por conocimiento (RAG), reglas deterministas de seguridad y escalamiento, y trazabilidad completa de las decisiones.
 
-## ⚠️ Estado actual frente a la rúbrica (léelo antes de evaluar)
+> ⚠️ **Proyecto simulado y educativo.** Este sistema no está diseñado ni debe utilizarse para atención médica real, diagnóstico, tratamiento ni toma de decisiones clínicas.
 
-| Compuerta | Estado | Detalle |
-|---|---|---|
-| G2 — Levantable ≤15 min | ✅ **3 pasos, `./setup.sh` + `./start.sh`** | `setup.sh` usa `uv` (venv + instalación de dependencias mucho más rápida que `pip` en frío) y es idempotente: pulls de Ollama y precalentado de Kokoro se saltan si ya están hechos. La primera vez en una máquina limpia el tiempo real depende de tu conexión (descarga de pesos de Ollama + Kokoro/torch, ver sección "Ejecutar el Agente Clínico"); correr `./setup.sh` una vez antes de la demo deja todo cacheado para una segunda ejecución de segundos. No cronometrado formalmente todavía — pendiente antes de la entrega. |
-| G3 — Modelo permitido | ✅ | Llama 3.2 (Meta) vía Ollama, local. Kokoro (TTS) no es el LLM que razona y no está sujeto a G3 — `stack-tecnico.md` deja voz como libre elección. |
-| G4 — Voz en tiempo real | ⚠️ **Parcial** | Ver "Voz" abajo: la respuesta hablada (TTS, Kokoro-82M) es real y local. La captura de la voz del paciente (STT) usa la Web Speech API del navegador — funciona hoy en Chrome, pero **no es local** (depende de internet y de un servicio de Google fuera de tu control). Antes de la entrega, decide si eso es aceptable para tu demo o si prefieres reemplazarlo por Whisper local/Groq. |
-| G5 — Conocimiento vivo | ✅ | Subir/eliminar documento vía consola cambia lo que el agente recupera (`RagStore.upsert_document` / `delete_document`) |
+---
 
-**Este README documenta el sistema tal como está implementado, no como se
-aspira a que quede.** Antes de dar por cerrado G4, prueba el loop completo
-en Chrome: clic en "🎤 Hablar", di algo, confirma que el texto se transcribe,
-marca "Responder con voz" y confirma que el agente contesta en audio.
+## ¿Qué hace?
+
+El agente acompaña una conversación postoperatoria y transforma el lenguaje libre del paciente en un estado clínico estructurado.
+
+A partir de cada turno:
+
+1. identifica síntomas e información clínica relevante;
+2. conserva el contexto de la conversación;
+3. recupera evidencia desde el conocimiento médico cargado;
+4. evalúa riesgo y datos faltantes;
+5. determina si corresponde escalar a atención humana;
+6. genera una respuesta fundamentada para el paciente;
+7. valida la respuesta mediante reglas de seguridad;
+8. registra una traza auditable del proceso.
+
+Una decisión clínica **no depende exclusivamente del LLM**. El modelo se utiliza para interpretar el lenguaje del paciente, mientras que la clasificación de riesgo, los guardrails y la validación de seguridad permanecen fuera del modelo y siguen reglas deterministas.
+
+---
 
 ## Arquitectura
 
+```text
+                         ┌─────────────────────┐
+                         │      Paciente       │
+                         │  voz / texto (ES)   │
+                         └──────────┬──────────┘
+                                    │
+                                    ▼
+                         ┌─────────────────────┐
+                         │    ClinicalAgent    │
+                         └──────────┬──────────┘
+                                    │
+                 ┌──────────────────┴──────────────────┐
+                 │                                     │
+                 ▼                                     ▼
+       ┌───────────────────┐                 ┌───────────────────┐
+       │ Extracción clínica│                 │ Guardrails sobre  │
+       │ Llama 3.2 / Ollama│                 │ mensaje original  │
+       └─────────┬─────────┘                 └─────────┬─────────┘
+                 │                                     │
+                 └──────────────────┬──────────────────┘
+                                    ▼
+                         ┌─────────────────────┐
+                         │ Estado de sesión    │
+                         │ + contexto clínico  │
+                         └──────────┬──────────┘
+                                    │
+                                    ▼
+                         ┌─────────────────────┐
+                         │        RAG          │
+                         │ ChromaDB +          │
+                         │ nomic-embed-text    │
+                         └──────────┬──────────┘
+                                    │
+                                    ▼
+                         ┌─────────────────────┐
+                         │ EvidenceEvaluation  │
+                         │ riesgo / evidencia  │
+                         │ información faltante│
+                         └──────────┬──────────┘
+                                    │
+                                    ▼
+                         ┌─────────────────────┐
+                         │ Decision            │
+                         │ determinista        │
+                         │ risk + escalation   │
+                         └──────────┬──────────┘
+                                    │
+                                    ▼
+                         ┌─────────────────────┐
+                         │ Generación respuesta│
+                         │ + evidencia citada  │
+                         └──────────┬──────────┘
+                                    │
+                                    ▼
+                         ┌─────────────────────┐
+                         │ Safety Validator    │
+                         │ reglas deterministas│
+                         └──────────┬──────────┘
+                                    │
+                                    ▼
+                         ┌─────────────────────┐
+                         │ Respuesta + audio   │
+                         │ + auditoría + métricas│
+                         └─────────────────────┘
 ```
-Paciente (texto, por ahora)
-   │  POST /agent/respond {session_id, message}
-   ▼
-ClinicalAgent.answer()
-   │
-   ├─ 1. extract_clinical()          → LLM (Llama 3.2 / Ollama) + overrides deterministas de seguridad
-   ├─ 2. merge_clinical_state()      → fusiona con el estado previo de la sesión (en memoria)
-   ├─ 3. rag_store.query()           → ChromaDB + embeddings Ollama (nomic-embed-text)
-   ├─ 4. evaluate()                  → EvidenceEvaluation (riesgo, evidencia, missing_information)
-   ├─ 5. decide()                    → Decision (risk_level, needs_human, reason_codes) — determinista, no LLM
-   ├─ 6. generate_response()         → texto para el paciente, basado en plantillas + evidencia citada
-   └─ 7. validate_safety()           → validador de seguridad basado en reglas (no LLM), puede bloquear la respuesta
-   ▼
-AgentResponse {response, decision, evidence, safety_validation, summary, metrics}
+
+### Flujo de procesamiento
+
+El pipeline de `ClinicalAgent.answer()` ejecuta las siguientes etapas:
+
+```text
+1. extract_clinical()
+        ↓
+2. merge_clinical_state()
+        ↓
+3. rag_store.query()
+        ↓
+4. evaluate()
+        ↓
+5. decide()
+        ↓
+6. generate_response()
+        ↓
+7. validate_safety()
+        ↓
+   AgentResponse
 ```
 
-Puntos de diseño relevantes:
+### Una sola llamada al LLM por turno
 
-- **Solo una llamada al LLM por turno** (la extracción clínica). La
-  clasificación de riesgo, la generación de la respuesta y la validación de
-  seguridad son deterministas — no dependen de que el LLM "decida" nada
-  clínicamente. Esto reduce latencia, costo y superficie de alucinación.
-- **Fallback determinista.** Si Ollama no responde o devuelve JSON inválido,
-  `extract_clinical` cae a `contextual_deterministic_extract_clinical` (regex
-  sobre el mensaje) en vez de fallar la conversación.
-- **Overrides de seguridad deterministas.** Independiente de lo que devuelva
-  el LLM, `apply_deterministic_safety_overrides` vuelve a correr los patrones
-  de `ALARM_PATTERNS` sobre el mensaje crudo y los fusiona con `alarm_signals`.
-  Esto es intencional (cinturón de seguridad contra que el LLM omita una
-  señal de alarma), pero también fue la causa de un bug corregido el
-  2026-08-12: el patrón de `fiebre_alta` disparaba con solo mencionar la
-  palabra "fiebre", incluso en preguntas informativas ("¿qué información
-  tienes sobre la fiebre?"). Se corrigió exigiendo un calificador
-  (`fiebre alta/elevada/...`) y detectando preguntas puras sin afirmación de
-  síntoma antes de extraer. Ver `clinical_agent/agent.py::_is_pure_information_query`.
+El LLM tiene una responsabilidad deliberadamente acotada: **extraer información clínica estructurada del lenguaje natural**.
 
-## Ejecutar el Agente Clínico
+La clasificación de riesgo, el escalamiento y la validación de seguridad no se delegan al modelo.
 
-**Requisito previo (no cuenta como paso, es infraestructura — igual que
-tener Python instalado):** [Ollama](https://ollama.com) instalado y
-corriendo. Si falta, `./setup.sh` se detiene con un mensaje claro en vez de
-fallar a medias.
+Esto reduce:
 
-**3 pasos:**
+* superficie de alucinación;
+* latencia;
+* dependencia del comportamiento probabilístico del modelo;
+* complejidad de auditoría.
 
-```sh
-# 1) Entra al proyecto
-cd tech-sphere-clinical-agent-2026
+Si el LLM no está disponible o devuelve una respuesta JSON inválida, el sistema dispone de un fallback determinista para mantener operativo el pipeline.
 
-# 2) Prepara todo: crea el venv con uv, instala dependencias, descarga los
-#    modelos de Ollama solo si faltan, instala espeak-ng si falta, y
-#    precalienta Kokoro-82M (así la voz queda lista desde el primer request,
-#    no falla en silencio la primera vez que alguien la pide)
-./setup.sh
+---
 
-# 3) Levanta el servidor
-./start.sh
-```
+## Modelo de lenguaje
 
-Abre `http://localhost:8000` para la consola (chat + administración de
-conocimiento).
+El proyecto utiliza:
 
-**Sobre el tiempo real (honestidad ante todo, sin inflar números):**
-`./setup.sh` es idempotente — los pulls de Ollama y el precalentado de
-Kokoro se saltan si ya están hechos. Eso significa que:
+**Llama 3.2 3B — Meta — Ollama — inferencia local**
 
-- **Primera vez en una máquina limpia:** el tiempo depende de tu conexión a
-  internet. Se descargan una sola vez los pesos de Ollama (`llama3.2` ≈2 GB,
-  `nomic-embed-text` ≈270 MB) y las dependencias de voz (Kokoro ≈80 MB +
-  `torch`, unos cientos de MB). Con banda ancha normal esto entra cómodo
-  dentro de los 15 minutos de G2.
-- **Ejecuciones posteriores** (por ejemplo, correr `./setup.sh` una vez
-  antes de la demo para dejar todo cacheado, y volver a correrlo justo antes
-  de la evaluación): segundos, porque `uv` reutiliza su cache de paquetes y
-  ni Ollama ni Kokoro vuelven a descargar nada.
+La elección responde a tres objetivos:
 
-Para acercarte de verdad a los 5 minutos frente al jurado, la recomendación
-es correr `./setup.sh` con anticipación (deja todo cacheado) y que la
-ejecución cronometrada sea la segunda. No hemos fabricado un número de
-"instalación en frío" porque ese tiempo está fuera de nuestro control (ancho
-de banda del evaluador) — ver "Métricas obligatorias" más abajo para la
-misma política aplicada a latencia/costo.
+* utilizar una familia de modelos permitida por el reto;
+* mantener el costo de inferencia en `$0`;
+* ejecutar la extracción localmente sin depender de una API externa durante la evaluación.
 
-## LLM
+El modelo no toma directamente la decisión de riesgo. Su salida se valida mediante Pydantic y posteriormente pasa por los mecanismos deterministas del agente.
 
-**Modelo: Llama 3.2 3B, vía Ollama, inferencia 100% local.**
+### Configuración
 
-Por qué se eligió esta familia (documentar también en el informe final con el
-detalle específico de tu caso):
-- Cumple la compuerta G3 (familia permitida: Meta Llama, serie 3.x, local).
-- Costo $0 — no depende de cuota ni de conectividad durante la evaluación en
-  vivo, lo que reduce el riesgo de que la sesión evaluada falle por límites
-  de un nivel gratuito de nube.
-- Corre en el rango de hardware descrito en `stack-tecnico.md` (8–16 GB RAM,
-  CPU), suficiente porque el agente le pide al LLM una única tarea acotada
-  (extracción de JSON estructurado), no razonamiento clínico abierto.
-
-La extracción clínica usa Ollama por defecto y valida la salida con Pydantic
-(`ClinicalExtraction.model_validate`). Si Ollama no responde o devuelve JSON
-inválido, el agente vuelve a la extracción determinista. Para desactivar
-Ollama durante pruebas locales:
+Para desactivar el uso del LLM durante pruebas:
 
 ```sh
 CLINICAL_AGENT_USE_LLM=0 uvicorn clinical_agent.main:app --reload --port 8000
 ```
 
-Para ver en consola el prompt, la respuesta cruda del LLM y cada paso de la
-extracción:
+Para inspeccionar el proceso de extracción:
 
 ```sh
 CLINICAL_AGENT_DEBUG_LLM=1 uvicorn clinical_agent.main:app --reload --port 8000
 ```
 
-## RAG
+---
 
-Vector store local persistente con embeddings locales.
+## RAG y conocimiento médico
 
-- LLM = Ollama / Llama 3.2 (solo para extracción, no para retrieval)
-- Embeddings = `nomic-embed-text` vía Ollama
-- Vector DB = ChromaDB persistente (`chromadb.PersistentClient`, similitud coseno)
-- Chunking = `chunk_size = 120` tokens, `overlap = 24`, respeta separación de
-  página (`\f`) para trazabilidad
-- Retrieval = top-k (`top_k=4` por defecto) con `document_id`, `filename`,
-  `page`, `chunk_id`, `quote_or_excerpt`, `retrieval_score` y `relevance` en
-  cada `EvidenceItem`
-- Cada consulta se registra en `RagStore.query_log` con latencia de
-  recuperación, útil para las métricas de §5 de la rúbrica
+El conocimiento se almacena localmente mediante:
 
-La colección vectorial se persiste bajo `CHROMA_PERSIST_DIR` (por defecto
-`./data/chroma`), con el modelo de embedding configurado por
-`EMBEDDING_MODEL`.
+* **ChromaDB** como vector store persistente.
+* **nomic-embed-text** mediante Ollama para embeddings.
+* PDF y TXT como fuentes de conocimiento.
+* recuperación `top-k`, con `top_k=4` por defecto.
+
+Cada elemento recuperado conserva información de trazabilidad:
+
+```text
+document_id
+filename
+page
+chunk_id
+quote_or_excerpt
+retrieval_score
+relevance
+```
+
+El texto se divide utilizando:
+
+```text
+chunk_size = 120 tokens
+overlap    = 24 tokens
+```
+
+La separación por página se conserva para que una evidencia pueda rastrearse hasta su documento y página de origen.
+
+La colección se persiste en:
+
+```text
+./data/chroma
+```
+
+La ubicación puede modificarse mediante:
+
+```text
+CHROMA_PERSIST_DIR
+```
+
+y el modelo de embeddings mediante:
+
+```text
+EMBEDDING_MODEL
+```
+
+### Configuración
 
 ```sh
 cp .env.example .env
-# ajustar CHROMA_PERSIST_DIR y EMBEDDING_MODEL si hace falta
 ```
 
-### Conocimiento vivo (G5)
+---
 
-`POST /knowledge/upload` (alias de `POST /documents`) indexa un PDF o TXT;
-`DELETE /knowledge/{document_id}` lo elimina del índice vectorial y de las
-respuestas futuras. `tests/test_agent.py::test_document_lifecycle_removes_deleted_document_from_retrieval`
-cubre exactamente este ciclo (subir → responder citando el documento →
-eliminar → responder sin evidencia).
+## Conocimiento vivo
 
-## Knowledge ingestion
+El conocimiento no está limitado al corpus inicial.
 
-Formatos soportados: PDF y TXT. PDF se lee localmente con `pypdf`, extrayendo
-texto por página (separador `\f`) para conservar `page`/`chunk_id`. TXT se
-decodifica como UTF-8. Ambos pasan por `RagStore.upsert_document(filename, text)`.
+La consola permite incorporar y retirar documentos durante la ejecución del sistema.
+
+### Incorporar conocimiento
+
+```http
+POST /knowledge/upload
+```
+
+También disponible mediante:
+
+```http
+POST /documents
+```
+
+### Eliminar conocimiento
+
+```http
+DELETE /knowledge/{document_id}
+```
+
+Cuando un documento es eliminado, deja de estar disponible para futuras recuperaciones.
+
+Este comportamiento está cubierto por una prueba de ciclo completo:
+
+```text
+subir documento
+      ↓
+responder utilizando su evidencia
+      ↓
+eliminar documento
+      ↓
+responder sin esa evidencia
+```
+
+---
 
 ## Voz
 
-### TTS — Kokoro-82M (respuesta hablada)
+La interacción de voz está separada en dos componentes.
 
-[Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) (Apache-2.0, 82M
-parámetros, corre en CPU, sin token de HuggingFace) sintetiza la respuesta
-del agente a WAV 24kHz, 100% local.
+### TTS — Kokoro-82M
 
-- Instalación: automática al correr `./setup.sh` (paso 2 de "Ejecutar el
-  Agente Clínico") — instala `kokoro`/`soundfile` vía `uv`, instala
-  `espeak-ng` (fallback de fonemización) vía Homebrew/apt, y precalienta el
-  pipeline para descargar/cachear los pesos del modelo antes de que arranque
-  el servidor. Ver también `stack-tecnico.md`.
-- Voz por defecto: `ef_dora` (español, femenina). También disponibles
-  `em_alex` y `em_santa` (español, masculinas) — ver
-  [VOICES.md](https://huggingface.co/hexgrad/Kokoro-82M/blob/main/VOICES.md)
-  del modelo para la lista completa de idiomas/voces.
-- `GET /tts/status` — reporta si Kokoro/soundfile están instalados y listos.
-- `POST /tts {"text": "...", "voice": "ef_dora"}` — sintetiza cualquier texto
-  suelto, devuelve `audio/wav` crudo.
-- `POST /agent/respond?voice=true` — el mismo endpoint clínico de siempre,
-  pero además sintetiza `response` con Kokoro, la agrega en
-  `audio_base64` (WAV en base64) y **suma la latencia de síntesis a
-  `metrics.total_latency_ms` / `metrics.tts_latency_ms`** — así el P50/P95
-  reportado en §5 refleja la definición real de la rúbrica ("desde que el
-  paciente termina de hablar hasta que empieza a sonar el audio del
-  agente"), no solo el razonamiento de texto.
-- Si Kokoro no está instalado, `voice=true` **no rompe la respuesta**: el
-  turno sigue devolviendo texto normal, con `metrics.tts_error` explicando
-  por qué no hay audio. La voz es una capa opcional sobre el mismo pipeline
-  clínico, nunca un requisito para que `/agent/respond` funcione.
+La respuesta del agente puede convertirse a voz utilizando **Kokoro-82M**.
 
-### STT — captura de voz del paciente (Web Speech API del navegador)
+Características:
 
-El botón "🎤 Hablar" de la consola usa `webkitSpeechRecognition` /
-`SpeechRecognition` del navegador (`lang="es-ES"`) para transcribir a texto
-y rellenar el mensaje del paciente. **Esto es un atajo pragmático, no una
-pieza del pipeline local**: funciona en Chrome, requiere conexión a
-internet, y el audio se procesa fuera de este repositorio (servicio de
-reconocimiento del navegador). Es la forma más simple de tener hoy un loop
-de voz de punta a punta para pasar la verificación en vivo de G4 ("el
-jurado habla y el agente responde con voz"), pero si tu demo debe correr
-sin depender de un servicio externo de Google, o si prefieres declarar un
-stack de STT 100% consistente con el resto (todo local u todo declarado),
-reemplázalo por Whisper local (`faster-whisper`) o Whisper vía Groq — ver
-`stack-tecnico.md`. Decláralo explícitamente en el informe final junto con
-el LLM, tal como pide G3 para el modelo de razonamiento.
+* 82M de parámetros;
+* ejecución local;
+* CPU;
+* salida WAV a 24 kHz;
+* sin necesidad de token de Hugging Face;
+* voces disponibles en español.
 
-### Loop completo para probar G4
+Voz predeterminada:
 
-1. Abre `http://localhost:8000`.
-2. Clic en "🎤 Hablar", di algo en español, confirma que el texto aparece en
-   "Mensaje del paciente".
-3. Marca "Responder con voz (Kokoro TTS, español)".
-4. Clic en "Enviar" — el agente debe responder en texto **y** reproducir
-   audio automáticamente (o con el botón de play si el navegador bloquea
-   autoplay).
+```text
+ef_dora
+```
 
-## Lógica de decisión y escalamiento
+También se encuentran disponibles voces como:
 
-`risk_level` se calcula de forma determinista en `ClinicalAgent.evaluate()`,
-en este orden de prioridad:
+```text
+em_alex
+em_santa
+```
 
-1. Contradicción detectada entre turnos → `UNKNOWN`, pide aclaración.
-2. `alarm_signals` no vacío (sangrado abundante, fiebre alta, dificultad
-   respiratoria, dolor de pecho, confusión) → `RED`, `needs_human=True`.
-3. Inyección de prompt detectada → `UNKNOWN`, no ejecuta la instrucción del
-   paciente.
-4. Trayectoria "empeorando" → `YELLOW`.
-5. Información faltante para caracterizar el síntoma → `UNKNOWN`, pregunta lo
-   que falta (prioriza `evolución` y `ubicación` sobre `intensidad`/`duración`).
-6. Si no hay nada de lo anterior → `GREEN`.
+El sistema expone:
 
-El resumen por llamada (`AgentResponse.summary`) incluye síntomas, riesgo,
-escalamiento, `evidence_ids`, `missing_information` y la respuesta enviada —
-es la base del "resumen al terminar la llamada" que pide el criterio de 20
-pts de Lógica de decisión y escalamiento.
+```http
+GET /tts/status
+```
 
-## Guardrails, handrails y ventana de auditoría
+para consultar el estado del componente y:
 
-El pipeline distingue explícitamente dos tipos de control, y deja trazabilidad
-de cada uno para poder auditar **en qué momento y por qué** se tomó una
-decisión — incluida la del LLM:
+```http
+POST /tts
+```
 
-- **Guardrails (duros, no bypasseables).** `ALARM_PATTERNS` e
-  `INJECTION_PATTERNS` corren como regex sobre el mensaje crudo del paciente
-  en **todos** los turnos, sin importar qué haya devuelto el LLM
-  (`_guardrail_pattern_steps`). El resultado se fusiona con la extracción del
-  LLM en `apply_deterministic_safety_overrides`, que nunca *quita* una señal
-  que el LLM haya perdido — solo puede *agregar* lo que el guardrail
-  detectó. La rama de riesgo en `evaluate()` también es un guardrail: es
-  código determinista (if/elif), no una decisión del LLM.
-- **Handrails (blandos, orientan sin bloquear).** La extracción vía LLM
-  (Llama 3.2) es la única guía "suave": interpreta lenguaje libre para
-  poblar `ClinicalExtraction`, pero nunca decide `risk_level` por sí sola —
-  eso queda siempre en manos de la lógica determinista de `evaluate()`.
+para sintetizar texto directamente.
 
-### Ventana de auditoría
+El endpoint clínico también puede solicitar respuesta hablada:
 
-Cada turno genera una traza (`DecisionAudit`) con un paso (`AuditStep`) por
-cada guardrail evaluado (se haya activado o no), el paso de extracción del
-LLM (con el `raw_response` recortado incluido), el override determinista
-(qué agregó el guardrail sobre lo que dijo el LLM, si algo), la rama exacta
-de `evaluate()` que fijó el `risk_level` y cada verificación de
-`validate_safety`. Esto permite responder, para cualquier respuesta del
-agente: *¿qué regla se activó, sobre qué texto, y qué rama de código decidió
-el resultado final?* — sin depender de leer logs de consola.
+```http
+POST /agent/respond?voice=true
+```
 
-- La API la devuelve en `AgentResponse.audit` en cada respuesta de
-  `/agent/respond`.
-- Se acumula por sesión (últimos 20 turnos) y se puede consultar completa en
-  `GET /audit/{session_id}`.
-- La consola (`/`) tiene una sección "Ventana de auditoría" que pinta la
-  traza del turno actual (guardrails activados en rojo, el paso del LLM en
-  azul) y puede cargar el histórico completo de la sesión.
+En ese caso, la respuesta incluye el audio y registra la latencia de síntesis dentro de las métricas del turno.
 
-### Caso real encontrado con la ventana de auditoría
+La capa TTS es opcional: si Kokoro no está disponible, el pipeline clínico continúa funcionando y devuelve la respuesta textual junto con el error de voz correspondiente.
 
-Usando `GET /audit/{session_id}` en una sesión de prueba se detectó que, en
-una conversación de varios turnos, el agente preguntaba **la misma** falta
-de información (`ubicación`, `evolución`) turno tras turno sin avanzar,
-aunque el paciente sí iba respondiendo. La traza mostró la causa exacta: el
-LLM (Llama 3.2 3B) devolvía JSON válido pero dejaba `locations`/`trajectory`
-vacíos en vez de poblarlos a partir de la pregunta anterior (por ejemplo,
-respondía "cabeza" creando el síntoma `"dolor de cabeza"` en vez de fijar
-`locations: ["cabeza"]`). El guardrail que sí rellena esos huecos con
-contexto (`_fill_contextual_gaps`) existía, pero **solo se ejecutaba en el
-camino de fallback** (cuando el LLM fallaba por completo) — nunca cuando el
-LLM "tenía éxito" pero dejaba campos de contexto vacíos, que es justo lo
-que hacía. Fix: `apply_contextual_backstop` corre ahora también en el
-camino de éxito del LLM, y `KNOWN_BODY_LOCATIONS` se amplió (le faltaban
-`cabeza`, `espalda`, `cuello`, `brazo`). Sin este guardrail, una trayectoria
-de empeoramiento reportada por el paciente podía perderse silenciosamente
-y nunca escalar a `YELLOW` — el tipo de falso negativo que la rúbrica
-penaliza con más peso que un falso positivo.
+### STT — voz del paciente
+
+La consola utiliza actualmente la **Web Speech API** del navegador para capturar y transcribir la voz del paciente.
+
+```text
+Paciente habla
+      ↓
+Web Speech API
+      ↓
+texto en español
+      ↓
+ClinicalAgent
+```
+
+Esta pieza no forma parte del pipeline local: depende del navegador y de conectividad.
+
+La arquitectura permite sustituirla posteriormente por una implementación basada en Whisper local u otro proveedor de STT.
+
+---
+
+## Lógica de riesgo y escalamiento
+
+La decisión de riesgo es determinista y se ejecuta independientemente de la decisión del LLM.
+
+La prioridad actual es:
+
+1. **Contradicción entre turnos**
+
+   * `UNKNOWN`
+   * solicita aclaración.
+
+2. **Señal de alarma**
+
+   * `RED`
+   * `needs_human=True`.
+
+3. **Intento de prompt injection**
+
+   * `UNKNOWN`
+   * la instrucción manipuladora no se ejecuta.
+
+4. **Trayectoria de empeoramiento**
+
+   * `YELLOW`.
+
+5. **Información insuficiente**
+
+   * `UNKNOWN`
+   * solicita los datos necesarios.
+
+6. **Sin condiciones anteriores**
+
+   * `GREEN`.
+
+Entre las señales de alarma contempladas se encuentran:
+
+* sangrado abundante;
+* fiebre alta;
+* dificultad respiratoria;
+* dolor de pecho;
+* confusión.
+
+La intención es que una señal de seguridad detectada por los guardrails no pueda ser eliminada posteriormente por la salida del LLM.
+
+---
+
+## Guardrails y seguridad
+
+El sistema utiliza dos capas conceptualmente diferentes.
+
+### Guardrails
+
+Son controles duros y deterministas.
+
+Los patrones de:
+
+```text
+ALARM_PATTERNS
+INJECTION_PATTERNS
+```
+
+se ejecutan sobre el mensaje original del paciente.
+
+La información detectada se combina posteriormente con la extracción del LLM, pero los guardrails pueden **agregar señales de seguridad y nunca eliminarlas**.
+
+### Handrails
+
+La extracción realizada por Llama 3.2 funciona como una capa flexible de interpretación.
+
+El modelo puede interpretar expresiones naturales y completar el estado clínico, pero no tiene autoridad para determinar directamente el `risk_level`.
+
+---
+
+## Ventana de auditoría
+
+Cada turno genera una estructura `DecisionAudit`.
+
+La auditoría permite reconstruir:
+
+* qué guardrails fueron evaluados;
+* cuáles se activaron;
+* qué información produjo el LLM;
+* qué respuesta devolvió el modelo;
+* qué añadió el procesamiento determinista;
+* qué rama de `evaluate()` determinó el riesgo;
+* qué validaciones de seguridad se ejecutaron.
+
+La auditoría está disponible directamente en:
+
+```text
+AgentResponse.audit
+```
+
+y puede consultarse para una sesión mediante:
+
+```http
+GET /audit/{session_id}
+```
+
+La sesión conserva los últimos 20 turnos de auditoría.
+
+La consola también permite visualizar la traza del turno actual y consultar el histórico.
+
+---
 
 ## Estado conversacional
 
-`SessionState` vive en memoria del proceso (`SessionStore`, diccionario
-`session_id -> SessionState`), no hay singleton mutable compartido entre
-sesiones distintas: cada `session_id` nuevo arranca con estado vacío. Para
-producción este estado debería moverse a almacenamiento persistente
-(Redis/Postgres), ya que se pierde al reiniciar el proceso.
+Cada conversación tiene su propio `session_id`.
 
-## Métricas obligatorias (rúbrica §5)
+El estado actual se mantiene en memoria mediante:
 
-Estas métricas son requisito, no opcionales. Se miden corriendo el servidor
-real contra `scripts/measure_metrics.py` — no están fabricadas a mano:
-
-```sh
-# con el servidor corriendo en otra terminal
-pip install httpx  # ya está en requirements.txt
-python scripts/measure_metrics.py --base-url http://localhost:8000 --runs 20
-
-# Con --voice, la latencia incluye la síntesis de audio con Kokoro (la
-# definición exacta que pide la rúbrica: "hasta que empieza a sonar el
-# audio del agente"). Requiere Kokoro instalado (ver sección "Voz").
-python scripts/measure_metrics.py --base-url http://localhost:8000 --runs 20 --voice
+```text
+SessionStore
 ```
 
-El script pega contra `/agent/respond` con mensajes variados (síntoma simple,
-pregunta informativa, señal de alarma, follow-up, intento de inyección),
-lee `metrics.total_latency_ms` y `metrics.rag_queries` que ya devuelve la
-API en cada respuesta, y guarda el reporte en
-`evals/results/metrics_report.json`.
+y se estructura conceptualmente como:
 
-| Métrica | Valor | Cómo se midió |
-|---|---|---|
-| Latencia P50 | `<pendiente: correr script>` | extremo a extremo, fin del mensaje del paciente → respuesta del agente (`total_latency_ms`) |
-| Latencia P95 | `<pendiente: correr script>` | idem |
-| Tokens de entrada / turno | `<pendiente: correr script>` | aproximación palabras×1.3 (Ollama no expone tokenizer real vía API) |
-| Tokens de salida / turno | `<pendiente: correr script>` | idem |
-| Invocaciones al modelo / turno | `<pendiente: correr script>` | 1 si la extracción usó el LLM, 0 si cayó al fallback determinista |
-| Consultas al RAG / llamada | `<pendiente: correr script>` | 1 consulta por turno × turnos promedio por llamada |
-| Costo estimado por llamada | `<pendiente: correr script>` | corre local ($0 real); extrapolado a precio de referencia de un proveedor cloud equivalente — ver `--price-per-1k-input/output` en el script |
+```text
+session_id → SessionState
+```
 
-**Antes de entregar, corre el script y reemplaza estos placeholders con los
-valores reales que te imprima.** La rúbrica es explícita: "reportar números
-que no se sostienen es peor que no reportarlos", y se contrastan contra los
-logs en la sesión de evaluación.
+Las sesiones son independientes entre sí y un nuevo `session_id` comienza con un estado vacío.
+
+Actualmente el estado no persiste después de reiniciar el proceso. Una evolución natural para un entorno de producción sería utilizar un almacenamiento persistente como Redis o PostgreSQL.
+
+---
+
+## Instalación
+
+### Requisito previo
+
+Se requiere **Ollama instalado y ejecutándose**.
+
+El script de instalación comprueba esta dependencia antes de continuar.
+
+### Levantar el proyecto
+
+```sh
+# 1. Entrar al proyecto
+cd tech-sphere-clinical-agent-2026
+
+# 2. Preparar dependencias, modelos y voz
+./setup.sh
+
+# 3. Iniciar el servidor
+./start.sh
+```
+
+Después de iniciar el servidor:
+
+```text
+http://localhost:8000
+```
+
+abre la consola del agente.
+
+`setup.sh` es idempotente: los modelos y dependencias que ya estén disponibles se reutilizan.
+
+La primera ejecución puede requerir tiempo adicional para descargar modelos y dependencias. Las ejecuciones posteriores aprovechan las cachés existentes.
+
+---
 
 ## Pruebas
+
+La suite principal puede ejecutarse mediante:
 
 ```sh
 pytest
 ```
 
-`tests/test_agent.py` corre con `CLINICAL_AGENT_USE_LLM=0` (ruta determinista,
-no requiere Ollama activo) usando `TestClient` de FastAPI in-process.
+Las pruebas unitarias utilizan la ruta determinista y no requieren que Ollama esté activo.
 
-`evals/run_evals.py` corre un set de casos etiquetados (normales, ambiguos,
-alarma, fuera de alcance, inyección de prompt, actualización de conocimiento)
-y calcula `risk_accuracy`, `red_recall`, `false_negative_rate`,
-`unsupported_claim_rate`, `injection_resistance`; el último resultado queda
-en `evals/results/latest.json`. `evals/run_multiturn_evals.py` cubre
-persistencia/aislamiento de sesión, contradicciones y preguntas redundantes.
+También existen evaluaciones específicas:
 
 ```sh
 python evals/run_evals.py
 python evals/run_multiturn_evals.py
 ```
 
-### Resultados de evaluación interna
+Estas cubren escenarios como:
 
-Además de `evals/run_evals.py`, se corrió una evaluación más grande contra un
-lote interno de conversaciones clínicas etiquetadas. Por motivos de
-privacidad y legales, ese lote no se incluye en este repositorio.
+* conversaciones normales;
+* casos ambiguos;
+* señales de alarma;
+* solicitudes fuera de alcance;
+* prompt injection;
+* actualización del conocimiento;
+* persistencia del contexto;
+* aislamiento entre sesiones;
+* contradicciones;
+* preguntas redundantes.
 
-**Corrida en modo determinista (sin LLM activo — el camino de respaldo, no
-el de producción):**
+Los resultados se almacenan en:
 
-| Métrica | Valor |
-|---|---:|
-| Casos evaluados | 320 |
-| Accuracy global | 26% |
-| Casos de alarma real correctamente escalados | 0% |
-| Sobre-triage / sub-triage | 167 / 40 casos |
+```text
+evals/results/
+```
 
-**Limitación:** en este modo de respaldo, sin el LLM interpretando el
-lenguaje del paciente, el sistema tiende a pedir más información en vez de
-decidir — más seguro que dar falsa tranquilidad, pero lejos de ideal.
+---
 
-**Mejora posible:** reforzar los guardrails deterministas (más patrones,
-lectura de valores numéricos como temperatura) para que este camino de
-respaldo sea más confiable cuando el LLM no está disponible, y repetir esta
-evaluación con el LLM activo antes de la entrega para el número que
-realmente cuenta en la calificación.
+## Métricas
 
-## Limitaciones conocidas y mejoras posibles
+El proyecto incluye un script para medir el comportamiento del sistema contra el servidor real:
 
-**Limitaciones actuales:**
+```sh
+python scripts/measure_metrics.py \
+  --base-url http://localhost:8000 \
+  --runs 20
+```
 
-- La captura de voz del paciente (STT) usa la Web Speech API del navegador,
-  no un modelo local — requiere Chrome e internet.
-- El sistema depende bastante del LLM: si no está disponible, el modo de
-  respaldo determinista es más conservador y menos preciso.
-- El estado de la conversación vive en memoria del proceso, no persiste si
-  el servidor se reinicia.
-- El conteo de tokens reportado es una aproximación, no el tokenizer real
-  del modelo.
+Para incluir síntesis de voz:
 
-**Mejoras posibles:**
+```sh
+python scripts/measure_metrics.py \
+  --base-url http://localhost:8000 \
+  --runs 20 \
+  --voice
+```
 
-- Reemplazar el STT por una alternativa local (Whisper) si se quiere un
-  stack de voz 100% local y consistente.
-- Reforzar los guardrails deterministas para que el modo de respaldo sin
-  LLM sea más confiable.
-- Mover el estado de sesión a almacenamiento persistente (Redis/Postgres)
-  para producción.
-- Cronometrar formalmente una instalación en limpio antes de la entrega,
-  y revisar los casos donde el validador de seguridad bloquea respuestas
-  para confirmar que es el comportamiento esperado.
+El reporte se guarda en:
 
-Licencia: MIT. Ver [LICENSE](./LICENSE).
+```text
+evals/results/metrics_report.json
+```
+
+Las métricas contempladas incluyen:
+
+| Métrica                | Descripción                                        |
+| ---------------------- | -------------------------------------------------- |
+| P50                    | Latencia mediana extremo a extremo                 |
+| P95                    | Latencia del percentil 95                          |
+| Tokens de entrada      | Estimación por turno                               |
+| Tokens de salida       | Estimación por turno                               |
+| Invocaciones al modelo | Llamadas al LLM por turno                          |
+| Consultas RAG          | Recuperaciones realizadas                          |
+| Costo estimado         | Costo por llamada según el escenario de referencia |
+
+Las métricas deben medirse directamente sobre la implementación antes de utilizar sus valores en el informe final.
+
+---
+
+## Estructura del proyecto
+
+La implementación está organizada alrededor de los siguientes componentes:
+
+```text
+.
+├── clinical_agent/
+│   ├── agent.py
+│   ├── ...
+│   └── main.py
+│
+├── tests/
+│   └── test_agent.py
+│
+├── evals/
+│   ├── run_evals.py
+│   ├── run_multiturn_evals.py
+│   └── results/
+│
+├── scripts/
+│   └── measure_metrics.py
+│
+├── data/
+│   └── chroma/
+│
+├── setup.sh
+├── start.sh
+├── .env.example
+├── requirements.txt
+└── LICENSE
+```
+
+---
+
+## Decisiones de diseño
+
+### El LLM interpreta; el código decide
+
+La decisión central del sistema es separar la interpretación probabilística del lenguaje de las decisiones de seguridad.
+
+```text
+Lenguaje natural
+       ↓
+      LLM
+       ↓
+Estado clínico estructurado
+       ↓
+Reglas deterministas
+       ↓
+Riesgo + escalamiento
+```
+
+Esto permite auditar la decisión sin depender exclusivamente del razonamiento interno del modelo.
+
+### Fallback determinista
+
+Si el LLM falla, el sistema no queda inmediatamente inutilizable.
+
+La extracción puede degradar a una ruta determinista basada en reglas y expresiones conocidas.
+
+Este mecanismo está pensado como mecanismo de continuidad, no como sustituto equivalente de la comprensión semántica proporcionada por el LLM.
+
+### Conocimiento separado del modelo
+
+El conocimiento médico se mantiene fuera de los pesos del modelo.
+
+Esto permite:
+
+* actualizar documentos;
+* agregar nuevos protocolos;
+* eliminar información;
+* rastrear la fuente de una evidencia;
+* modificar el conocimiento sin volver a entrenar el modelo.
+
+---
+
+## Limitaciones conocidas
+
+El sistema actual tiene varias limitaciones explícitas.
+
+### STT externo
+
+La captura de voz del paciente depende actualmente de la Web Speech API del navegador y, por tanto, no constituye una solución STT completamente local.
+
+### Estado de sesión
+
+El estado conversacional se mantiene en memoria y se pierde al reiniciar el proceso.
+
+### Conteo de tokens
+
+El cálculo utilizado para las métricas de tokens es una aproximación basada en palabras y no una medición directa del tokenizer de Llama 3.2.
+
+### Dependencia del LLM para interpretación semántica
+
+El fallback determinista ofrece continuidad, pero su capacidad para interpretar lenguaje clínico natural es inferior a la ruta que utiliza el LLM.
+
+Esto es particularmente relevante para escenarios donde el paciente expresa síntomas utilizando lenguaje indirecto o variaciones lingüísticas no contempladas explícitamente por las reglas.
+
+### Uso educativo
+
+El sistema no ha sido diseñado, validado ni certificado para uso clínico real.
+
+---
+
+## Roadmap
+
+Las siguientes mejoras son evoluciones naturales de la arquitectura:
+
+* reemplazar Web Speech API por STT local;
+* persistir el estado conversacional;
+* ampliar la cobertura de extracción determinista;
+* mejorar la interpretación de valores clínicos expresados numéricamente;
+* ampliar las evaluaciones multivuelta;
+* incorporar más casos adversariales;
+* mejorar la medición directa de tokens;
+* optimizar latencia de voz;
+* ampliar las herramientas de auditoría.
+
+---
+
+## Licencia
+
+Este proyecto se distribuye bajo licencia **MIT**.
+
+Consulta [`LICENSE`](./LICENSE) para los términos completos.
