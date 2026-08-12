@@ -81,12 +81,43 @@ class SessionState(BaseModel):
     current_decision: dict[str, Any] | None = None
     last_question: str | None = None
     turn_count: int = 0
+    audit_log: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class MissingInformationItem(BaseModel):
     field: str
     priority: str = "MEDIUM"
     reason: str | None = None
+
+
+class AuditStep(BaseModel):
+    """Un paso trazable del pipeline de decision: que regla corrio, si se
+    activo (triggered) y por que. Esta es la base de la ventana de auditoria:
+    permite ver, para cualquier turno, en que momento y por que se tomo la
+    decision, y distinguir guardrails (reglas deterministas que no se pueden
+    saltar, corren siempre) de handrails (guia blanda, p.ej. el LLM, que
+    orienta pero no decide riesgo por si sola)."""
+
+    stage: str
+    kind: str = "guardrail"  # "guardrail" | "handrail" | "info"
+    rule_id: str | None = None
+    triggered: bool = False
+    reason: str
+    matched_text: str | None = None
+    data: dict[str, Any] = Field(default_factory=dict)
+    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+
+class DecisionAudit(BaseModel):
+    """Traza completa de un turno: todos los AuditStep evaluados (guardrails
+    disparados y no disparados, la rama de evaluate() que decidio el riesgo,
+    y las verificaciones de validate_safety), mas el resultado final."""
+
+    session_id: str
+    turn_count: int
+    steps: list[AuditStep] = Field(default_factory=list)
+    final_risk_level: RiskLevel
+    final_reason: str
 
 
 class EvidenceEvaluation(BaseModel):
@@ -138,6 +169,11 @@ class SessionResetRequest(BaseModel):
     session_id: str
 
 
+class TtsRequest(BaseModel):
+    text: str
+    voice: str | None = None
+
+
 class AgentResponse(BaseModel):
     session_id: str
     response: str
@@ -146,6 +182,8 @@ class AgentResponse(BaseModel):
     safety_validation: SafetyValidation
     summary: dict[str, Any]
     metrics: dict[str, Any]
+    audit: DecisionAudit
+    audio_base64: str | None = None
 
 
 class DocumentRecord(BaseModel):

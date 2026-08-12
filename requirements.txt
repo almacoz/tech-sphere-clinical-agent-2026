@@ -7,3 +7,5 @@ httpx==0.28.1
 ollama==0.5.1
 chromadb==1.0.15
 pypdf==6.0.0
+kokoro>=0.9.4
+soundfile>=0.12.1
